@@ -46,7 +46,7 @@ except ImportError:
     pass
 
 from fidoo_driver import (
-    Fidoo7Driver,
+    FidooDriver,
     ValidationError,
     TimeoutError,
     AuthenticationError,
@@ -228,7 +228,7 @@ def main():
             if api_url:
                 driver_kwargs['base_url'] = api_url
 
-            driver = Fidoo7Driver(**driver_kwargs)
+            driver = FidooDriver(**driver_kwargs)
             logger.info("Fidoo driver initialized")
 
         except AuthenticationError as e:
