@@ -400,7 +400,49 @@ def export_dependent_to_duckdb(conn, driver, object_type, config):
     return len(main_records)
 
 
-def export_duckdb_to_csv(conn, ci, output_bucket):
+def get_primary_key_for_table(conn, table_name):
+    """
+    Detect primary key columns for a table.
+
+    Returns:
+        List of column names that form the primary key
+    """
+    # Get columns for this table
+    columns = conn.execute(f"DESCRIBE \"{table_name}\"").fetchall()
+    column_names = [col[0] for col in columns]
+
+    # Nested tables use _parent_id + _index as composite key
+    if "__" in table_name:
+        pk = []
+        if "_parent_id" in column_names:
+            pk.append("_parent_id")
+        if "_index" in column_names:
+            pk.append("_index")
+        return pk if pk else None
+
+    # Primary tables - look for {table_name}Id pattern
+    base_name = table_name.replace("_", "")
+    candidates = [
+        f"{table_name}Id",           # expenseId
+        f"{base_name}Id",            # expense -> expenseId
+        f"{table_name.rstrip('s')}Id",  # users -> userId
+        "id",
+        "Id",
+    ]
+
+    for candidate in candidates:
+        if candidate in column_names:
+            return [candidate]
+
+    # Fallback: first column ending with 'Id'
+    for col in column_names:
+        if col.endswith('Id') and not col.startswith('_'):
+            return [col]
+
+    return None
+
+
+def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True):
     """
     Export all tables from DuckDB to CSV files for Keboola.
 
@@ -408,6 +450,7 @@ def export_duckdb_to_csv(conn, ci, output_bucket):
         conn: DuckDB connection
         ci: CommonInterface instance
         output_bucket: Destination bucket in Keboola Storage
+        set_primary_keys: Whether to set primary keys in manifests
 
     Returns:
         Dict of table_name -> record_count
@@ -419,12 +462,15 @@ def export_duckdb_to_csv(conn, ci, output_bucket):
 
     for table_name in table_names:
         # Get record count
-        count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        count = conn.execute(f"SELECT COUNT(*) FROM \"{table_name}\"").fetchone()[0]
 
         if count == 0:
             logger.info(f"Skipping empty table: {table_name}")
             export_counts[table_name] = 0
             continue
+
+        # Detect primary key
+        primary_key = get_primary_key_for_table(conn, table_name) if set_primary_keys else None
 
         # Create output table definition
         csv_name = f"{table_name}.csv"
@@ -433,14 +479,16 @@ def export_duckdb_to_csv(conn, ci, output_bucket):
         out_table = ci.create_out_table_definition(
             name=csv_name,
             destination=destination,
+            primary_key=primary_key,
             incremental=False,
             has_header=True,
         )
 
         # Export to CSV using DuckDB
-        conn.execute(f"COPY {table_name} TO '{out_table.full_path}' (HEADER, DELIMITER ',')")
+        conn.execute(f"COPY \"{table_name}\" TO '{out_table.full_path}' (HEADER, DELIMITER ',')")
 
-        logger.info(f"Exported {count} records from {table_name} to {out_table.full_path}")
+        pk_info = f" [PK: {', '.join(primary_key)}]" if primary_key else ""
+        logger.info(f"Exported {count} records from {table_name}{pk_info}")
 
         # Write manifest
         ci.write_manifest(out_table)
@@ -490,10 +538,14 @@ def main():
         # Include dependent objects (expense_item, travel_report_detail, travel_request_detail)
         include_dependent = parameters.get('include_dependent', True)
 
+        # Set primary keys in manifests
+        set_primary_keys = parameters.get('set_primary_keys', True)
+
         logger.info(f"Configuration loaded:")
         logger.info(f"  - Objects: {objects}")
         logger.info(f"  - Output bucket: {output_bucket}")
         logger.info(f"  - Include dependent: {include_dependent}")
+        logger.info(f"  - Set primary keys: {set_primary_keys}")
         if api_url:
             logger.info(f"  - API URL: {api_url}")
 
@@ -573,7 +625,7 @@ def main():
             logger.info("PHASE 3: Exporting to CSV")
             logger.info(f"{'='*50}")
 
-            export_counts = export_duckdb_to_csv(conn, ci, output_bucket)
+            export_counts = export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys)
 
         finally:
             conn.close()

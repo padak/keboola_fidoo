@@ -34,13 +34,29 @@ Data extractor for Fidoo expense management system.
 {
   "parameters": {
     "#FIDOO_API_KEY": "your-api-key",
-    "objects": ["user", "card", "transaction", "expense"],
+    "api_url": "https://api.fidoo.com/v2/",
     "output_bucket": "out.c-fidoo",
+    "objects": ["user", "card", "transaction", "expense"],
     "include_dependent": true,
-    "api_url": "https://api.fidoo.com/v2/"
+    "set_primary_keys": true
   }
 }
 ```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `#FIDOO_API_KEY` | required | Fidoo API key |
+| `api_url` | production | API URL (use demo for testing) |
+| `output_bucket` | out.c-fidoo | Target bucket in Keboola Storage |
+| `objects` | basic set | List of objects to extract |
+| `include_dependent` | true | Extract dependent objects (expense_item, etc.) |
+| `set_primary_keys` | true | Auto-detect and set primary keys |
+
+## Output
+
+- **Automatic output mapping** - tables are created in the specified bucket via manifest
+- **Primary keys** - automatically detected (e.g., `expenseId`, `userId`, `[_parent_id, _index]` for nested)
+- **Nested objects** - flattened into separate tables with foreign key reference
 
 ## Local Run
 
