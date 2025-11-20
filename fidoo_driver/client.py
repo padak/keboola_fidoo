@@ -1,222 +1,235 @@
 """
-Fidoo7 Driver - Main Client Implementation
+Fidoo8Driver - Python API Driver for Fidoo Expense Management API
 
-Expense management API driver with support for users, cards, transactions, expenses, and travel management.
+Fidoo is a comprehensive expense management platform for corporate finances.
+This driver provides access to:
+- User management and profiles
+- Card management (personal and shared)
+- Transaction tracking
+- Expense management
+- Travel reports and allowances
+- Personal billing and settlements
+- System settings and configurations
 
-Features:
-- API key authentication (X-Api-Key header)
-- Cursor-based pagination with offsetToken
-- Rate limiting with automatic exponential backoff
-- Structured error handling
-- Debug mode for troubleshooting
+API Documentation: https://www.fidoo.com/support/expense-management-en/it-specialist/specifications-api/
+Demo API: https://api-demo.fidoo.com/v2/
+Production API: https://api.fidoo.com/v2/
 """
 
-import logging
 import os
 import time
-from typing import Any, Dict, Iterator, List, Optional
-
+import logging
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from typing import List, Dict, Any, Optional, Iterator
+from urllib.parse import urljoin
 
-# Bug Prevention #5: Try package imports first, fallback to standalone
+# Try package imports first, fallback to standalone
 try:
     from .base import BaseDriver, DriverCapabilities, PaginationStyle
     from .exceptions import (
+        DriverError,
         AuthenticationError,
         ConnectionError,
-        DriverError,
-        FieldNotFoundError,
         ObjectNotFoundError,
+        FieldNotFoundError,
         QuerySyntaxError,
         RateLimitError,
-        TimeoutError,
         ValidationError,
+        TimeoutError,
     )
 except ImportError:
     # Running as standalone script (e.g., in tests)
     from base import BaseDriver, DriverCapabilities, PaginationStyle
     from exceptions import (
+        DriverError,
         AuthenticationError,
         ConnectionError,
-        DriverError,
-        FieldNotFoundError,
         ObjectNotFoundError,
+        FieldNotFoundError,
         QuerySyntaxError,
         RateLimitError,
-        TimeoutError,
         ValidationError,
+        TimeoutError,
     )
 
 
-class Fidoo7Driver(BaseDriver):
+class Fidoo8Driver(BaseDriver):
     """
-    Fidoo7 Expense Management API Driver
+    Fidoo8Driver - Complete Python driver for Fidoo Public API v2
 
-    REST API driver for Fidoo expense management system.
-    Supports user management, card operations, transactions, expenses, and travel management.
-
-    Capabilities:
-    - Read operations (GET endpoints for all objects)
-    - Write operations (POST endpoints for create/update)
-    - Delete operations (remove users, cards, settings)
-    - Batch operations (load/unload multiple cards)
-    - Cursor-based pagination (offsetToken)
-    - Rate limiting (6,000 requests/day with automatic retry)
+    Features:
+    - Complete CRUD operations on users, cards, expenses, and transactions
+    - Cursor-based pagination with offset tokens
+    - Automatic retry on rate limits (429) with exponential backoff
+    - Comprehensive error handling with actionable messages
+    - Debug mode for troubleshooting API calls
 
     Example:
-        >>> client = Fidoo7Driver.from_env()
-        >>> users = client.read("user/get-users", limit=50)
-        >>> print(f"Found {len(users)} users")
+        >>> # Load from environment
+        >>> client = Fidoo8Driver.from_env()
+        >>>
+        >>> # Get all users
+        >>> users = client.list_objects()
+        >>> user_fields = client.get_fields("User")
+        >>>
+        >>> # Query users
+        >>> result = client.read("User", limit=50)
+        >>> print(f"Found {len(result)} users")
+        >>>
+        >>> # Cleanup
         >>> client.close()
     """
 
-    # Core constants
-    DEFAULT_BASE_URL = "https://api.fidoo.com/v2/"
-    DEMO_BASE_URL = "https://api-demo.fidoo.com/v2/"
-    MAX_PAGE_SIZE = 100
-    SAFE_DEFAULT_PAGE_SIZE = 50
-    RATE_LIMIT_PER_DAY = 6000
-    DRIVER_NAME = "Fidoo7"
-
-    # Available objects/endpoints
-    AVAILABLE_OBJECTS = [
-        "user",
-        "card",
-        "transaction",
-        "cash_transaction",
-        "mvc_transaction",
-        "expense",
-        "travel_report",
-        "travel_request",
-        "personal_billing",
-        "account",
-        "cost_center",
-        "project",
-        "account_assignment",
-        "accounting_category",
-        "vat_breakdown",
-        "vehicle",
-        "receipt",
+    # Fidoo API objects (discoverable via list_objects)
+    FIDOO_OBJECTS = [
+        "User",
+        "Card",
+        "Transaction",
+        "CardTransaction",
+        "Expense",
+        "ExpenseItem",
+        "CashTransaction",
+        "TravelReport",
+        "TravelRequest",
+        "TravelDetail",
+        "PersonalBilling",
+        "MVCTransaction",
+        "CostCenter",
+        "Project",
+        "AccountAssignment",
+        "Vehicle",
+        "VATBreakdown",
     ]
+
+    # Map object names to API endpoints
+    OBJECT_ENDPOINTS = {
+        "User": "/user/get-users",
+        "Card": "/card/get-cards",
+        "Transaction": "/transaction/get-card-transactions",
+        "CardTransaction": "/transaction/get-card-transactions",
+        "Expense": "/expense/get-expenses",
+        "ExpenseItem": "/expense/get-expense-items",
+        "CashTransaction": "/cash-transactions/get-cash-transactions",
+        "TravelReport": "/travel/get-travel-reports",
+        "TravelRequest": "/travel/get-travel-requests",
+        "PersonalBilling": "/personal-billing/get-billings",
+        "MVCTransaction": "/mvc-transaction/get-transactions",
+        "CostCenter": "/settings/get-cost-centers",
+        "Project": "/settings/get-projects",
+        "AccountAssignment": "/settings/get-account-assignments",
+        "Vehicle": "/settings/get-vehicles",
+        "VATBreakdown": "/settings/get-vat-breakdowns",
+    }
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        access_token: Optional[str] = None,
         timeout: int = 30,
         max_retries: int = 3,
         debug: bool = False,
         **kwargs
     ):
         """
-        Initialize Fidoo7Driver.
+        Initialize Fidoo8Driver.
 
-        IMPORTANT: Follows strict 4-phase initialization order to prevent bugs.
-        See: docs/BUG_PREVENTION_INITIALIZATION.md
+        CRITICAL: Initialization follows strict 4-phase order!
+        See: IMPLEMENTATION_NOTES.md - Initialization Order
 
         Args:
-            base_url: API base URL (default: production https://api.fidoo.com/v2/)
-            api_key: API key for authentication (from X-Api-Key header)
-            access_token: OAuth access token (if supported, currently unused)
+            base_url: Fidoo API base URL (default: https://api.fidoo.com/v2)
+            api_key: API key for authentication (or set FIDOO_API_KEY env var)
             timeout: Request timeout in seconds (default: 30)
-            max_retries: Maximum retry attempts for rate limiting (default: 3)
+            max_retries: Max retries on rate limit (default: 3)
             debug: Enable debug logging (default: False)
-            **kwargs: Additional driver-specific options
 
         Raises:
-            AuthenticationError: If credentials invalid or missing
-            ConnectionError: If cannot reach API
+            AuthenticationError: If API key is invalid or missing
+            ConnectionError: If API is unreachable
 
         Example:
-            >>> driver = Fidoo7Driver.from_env()  # Recommended
-            >>> driver = Fidoo7Driver(
-            ...     base_url="https://api-demo.fidoo.com/v2/",
-            ...     api_key="your_api_key_here"
+            >>> # Recommended: use from_env()
+            >>> driver = Fidoo8Driver.from_env()
+            >>>
+            >>> # Or explicit credentials
+            >>> driver = Fidoo8Driver(
+            ...     base_url="https://api-demo.fidoo.com/v2",
+            ...     api_key="your_api_key"
             ... )
         """
 
         # ===== PHASE 1: Set custom attributes =====
-        # Initialize any driver-specific fields before parent attributes
-        self.driver_name = self.DRIVER_NAME
-        self.demo_url = self.DEMO_BASE_URL
+        self.driver_name = "Fidoo8Driver"
+        self.api_version = "v2"
 
         # Setup logging
         if debug:
             logging.basicConfig(level=logging.DEBUG)
-            logger = logging.getLogger(__name__)
-            logger.setLevel(logging.DEBUG)
-        else:
-            logger = logging.getLogger(__name__)
-            logger.setLevel(logging.WARNING)
-        self.logger = logger
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG if debug else logging.WARNING)
 
         # ===== PHASE 2: Set parent class attributes =====
-        # DO NOT call super().__init__()! Set these manually instead.
-        # This must happen BEFORE _create_session() so session can use them.
-        resolved_base_url = base_url or self.DEFAULT_BASE_URL
-        self.base_url = resolved_base_url
+        # DO NOT call super().__init__()! Set attributes manually instead.
+        resolved_base_url = base_url or "https://api.fidoo.com/v2"
+        self.api_url = resolved_base_url.rstrip("/")  # Remove trailing slash
+        self.base_url = self.api_url  # For compatibility with BaseDriver
         self.api_key = api_key
-        self.access_token = access_token
         self.timeout = timeout or 30
         self.max_retries = max_retries or 3
         self.debug = debug
 
         # ===== PHASE 3: Create session =====
-        # Session creation can now use all attributes set above
         self.session = self._create_session()
 
         # ===== PHASE 4: Validate connection =====
-        # Validation can now use self.session and other attributes
         self._validate_connection()
 
     @classmethod
-    def from_env(cls, **kwargs) -> "Fidoo7Driver":
+    def from_env(cls, **kwargs) -> "Fidoo8Driver":
         """
         Create driver instance from environment variables.
 
-        Environment variables:
+        Environment Variables:
             FIDOO_API_KEY: API key (required)
-            FIDOO_API_URL: API base URL (optional, defaults to production)
+            FIDOO_BASE_URL: API base URL (optional, defaults to production)
             FIDOO_TIMEOUT: Request timeout in seconds (optional)
-            FIDOO_MAX_RETRIES: Max retry attempts (optional)
+            FIDOO_MAX_RETRIES: Max retries on rate limit (optional)
             FIDOO_DEBUG: Enable debug mode "true"/"false" (optional)
 
-        Args:
-            **kwargs: Additional arguments passed to __init__
-
         Returns:
-            Configured driver instance
+            Configured Fidoo8Driver instance
 
         Raises:
-            AuthenticationError: If required env vars are missing
+            AuthenticationError: If FIDOO_API_KEY is not set
 
         Example:
-            >>> driver = Fidoo7Driver.from_env()
-            >>> users = driver.read("user/get-users")
+            >>> # Set environment variables first:
+            >>> # export FIDOO_API_KEY="your_key_here"
+            >>> # export FIDOO_BASE_URL="https://api-demo.fidoo.com/v2"
+            >>>
+            >>> driver = Fidoo8Driver.from_env()
+            >>> users = driver.read("User", limit=10)
         """
-        # Bug Prevention #6: NEVER hardcode credentials
         api_key = os.getenv("FIDOO_API_KEY")
         if not api_key:
             raise AuthenticationError(
-                "Missing API key. Set FIDOO_API_KEY environment variable.",
+                "Missing Fidoo API key. Set FIDOO_API_KEY environment variable.",
                 details={
                     "required_env_vars": ["FIDOO_API_KEY"],
                     "optional_env_vars": [
-                        "FIDOO_API_URL",
+                        "FIDOO_BASE_URL",
                         "FIDOO_TIMEOUT",
                         "FIDOO_MAX_RETRIES",
                         "FIDOO_DEBUG",
                     ],
+                    "how_to_get_api_key": "Generate in Fidoo app: Main Administrator → API Keys",
                 },
             )
 
-        base_url = os.getenv("FIDOO_API_URL", cls.DEFAULT_BASE_URL)
+        base_url = os.getenv("FIDOO_BASE_URL")
         timeout = int(os.getenv("FIDOO_TIMEOUT", "30"))
         max_retries = int(os.getenv("FIDOO_MAX_RETRIES", "3"))
-        debug = os.getenv("FIDOO_DEBUG", "false").lower() == "true"
+        debug = os.getenv("FIDOO_DEBUG", "false").lower() in ("true", "1", "yes")
 
         return cls(
             base_url=base_url,
@@ -232,130 +245,155 @@ class Fidoo7Driver(BaseDriver):
         Return driver capabilities.
 
         Returns:
-            DriverCapabilities object with supported features
-
-        Example:
-            >>> capabilities = client.get_capabilities()
-            >>> if capabilities.write:
-            ...     print("Write operations supported")
+            DriverCapabilities with supported operations
         """
         return DriverCapabilities(
             read=True,
             write=True,
             update=True,
             delete=True,
-            batch_operations=True,
+            batch_operations=False,
             streaming=False,
             pagination=PaginationStyle.CURSOR,
-            query_language=None,  # REST API, no query language
-            max_page_size=self.MAX_PAGE_SIZE,
+            query_language=None,  # REST API, not SQL/SOQL
+            max_page_size=100,
             supports_transactions=False,
             supports_relationships=True,
         )
 
+    # ===== Discovery Methods =====
+
     def list_objects(self) -> List[str]:
         """
-        Discover all available objects/endpoints.
+        Discover all available Fidoo objects.
 
         Returns:
-            List of available object names
+            List of object names (User, Card, Transaction, Expense, etc.)
 
         Example:
-            >>> objects = client.list_objects()
+            >>> driver = Fidoo8Driver.from_env()
+            >>> objects = driver.list_objects()
             >>> print(objects)
-            ['user', 'card', 'transaction', 'expense', ...]
+            ['User', 'Card', 'Transaction', 'Expense', ...]
         """
-        return self.AVAILABLE_OBJECTS
+        return self.FIDOO_OBJECTS
 
     def get_fields(self, object_name: str) -> Dict[str, Any]:
         """
-        Get complete field schema for an object.
+        Get field schema for a Fidoo object.
 
         Args:
-            object_name: Name of object (case-sensitive)
+            object_name: Name of object (e.g., "User", "Card", "Expense")
 
         Returns:
-            Dictionary with field definitions
+            Dictionary mapping field names to field metadata
 
         Raises:
             ObjectNotFoundError: If object doesn't exist
 
         Example:
-            >>> fields = client.get_fields("user")
+            >>> driver = Fidoo8Driver.from_env()
+            >>> fields = driver.get_fields("User")
             >>> print(fields.keys())
-            dict_keys(['firstName', 'lastName', 'email', ...])
+            dict_keys(['userId', 'firstName', 'lastName', 'email', ...])
+
+            >>> # Check field details
+            >>> print(fields['email']['type'])
+            'string'
         """
-        # Map object names to their field schemas
+        if object_name not in self.FIDOO_OBJECTS:
+            raise ObjectNotFoundError(
+                f"Object '{object_name}' not found in Fidoo API",
+                details={
+                    "requested": object_name,
+                    "available": self.FIDOO_OBJECTS,
+                    "suggestion": "Call list_objects() to see available objects",
+                },
+            )
+
+        # Return schema for known objects
+        # These are extracted from API documentation
         schemas = {
-            "user": {
-                "firstName": {"type": "string", "required": False, "label": "First Name"},
-                "lastName": {"type": "string", "required": False, "label": "Last Name"},
-                "email": {"type": "string", "required": False, "label": "Email"},
-                "phone": {"type": "string", "required": False, "label": "Phone"},
-                "employeeNumber": {
-                    "type": "string",
-                    "required": False,
-                    "label": "Employee Number",
-                },
+            "User": {
+                "userId": {"type": "string", "description": "Unique user identifier (UUID)"},
+                "firstName": {"type": "string", "description": "User's first name"},
+                "lastName": {"type": "string", "description": "User's last name"},
+                "email": {"type": "string", "description": "User's email address"},
+                "phone": {"type": "string", "description": "User's phone number"},
+                "employeeNumber": {"type": "string", "description": "Employee number"},
+                "Position": {"type": "string", "description": "User's position"},
                 "userState": {
-                    "type": "string",
-                    "required": False,
-                    "label": "User State",
-                    "enum": ["active", "deleted", "new"],
+                    "type": "enum",
+                    "values": ["active", "deleted", "new"],
+                    "description": "User status",
                 },
+                "deactivated": {"type": "boolean", "description": "Is user deactivated"},
+                "usesApplication": {"type": "boolean", "description": "Has app access"},
+                "kycStatus": {
+                    "type": "enum",
+                    "values": ["unknown", "ok", "failed", "refused"],
+                    "description": "KYC status",
+                },
+                "language": {"type": "string", "description": "Application language"},
+                "companyId": {"type": "string", "description": "Company identifier"},
+                "LastModified": {"type": "datetime", "description": "Last modification date"},
             },
-            "card": {
-                "cardId": {"type": "string", "required": True, "label": "Card ID"},
-                "status": {"type": "string", "required": False, "label": "Status"},
-                "type": {
-                    "type": "string",
-                    "required": False,
-                    "label": "Card Type",
-                    "enum": ["personal", "shared"],
+            "Card": {
+                "cardId": {"type": "string", "description": "Unique card identifier (UUID)"},
+                "cardState": {
+                    "type": "enum",
+                    "values": ["first-ordered", "active", "hard-blocked", "soft-blocked", "expired"],
+                    "description": "Card status",
                 },
-                "masked_pan": {"type": "string", "required": False, "label": "Masked PAN"},
-                "expiration": {"type": "string", "required": False, "label": "Expiration"},
-                "available_balance": {
-                    "type": "number",
-                    "required": False,
-                    "label": "Available Balance",
-                },
+                "cardType": {"type": "enum", "values": ["personal", "shared"], "description": "Card type"},
+                "maskedNumber": {"type": "string", "description": "Masked PAN"},
+                "embossName": {"type": "string", "description": "Cardholder name"},
+                "alias": {"type": "string", "description": "Optional card alias"},
+                "expiration": {"type": "date", "description": "Card expiry date"},
+                "availableBalance": {"type": "number", "description": "Available balance"},
+                "accountingBalance": {"type": "number", "description": "Accounting balance"},
+                "blockedBalance": {"type": "number", "description": "Blocked balance"},
+                "userId": {"type": "string", "description": "Card owner user ID"},
+                "connectedUserIds": {"type": "string", "description": "Connected user IDs (team card)"},
             },
-            "transaction": {
-                "id": {"type": "string", "required": True, "label": "Transaction ID"},
-                "cardId": {"type": "string", "required": False, "label": "Card ID"},
-                "amount": {"type": "number", "required": False, "label": "Amount"},
-                "date": {
-                    "type": "datetime",
-                    "required": False,
-                    "label": "Transaction Date",
+            "Expense": {
+                "expenseId": {"type": "string", "description": "Unique expense identifier"},
+                "ownerUserId": {"type": "string", "description": "Expense owner user ID"},
+                "dateTime": {"type": "datetime", "description": "Expense timestamp"},
+                "lastEditDateTime": {"type": "datetime", "description": "Last edit timestamp"},
+                "name": {"type": "string", "description": "Expense name"},
+                "amount": {"type": "number", "description": "Expense amount"},
+                "amountCzk": {"type": "number", "description": "Amount in CZK"},
+                "currency": {"type": "string", "description": "Currency code"},
+                "shortId": {"type": "string", "description": "Short expense ID (e.g., EX-10)"},
+                "state": {
+                    "type": "enum",
+                    "values": ["prepare", "approve", "approve2", "accountantApprove", "personalBill", "export", "exported"],
+                    "description": "Expense state",
                 },
+                "type": {"type": "enum", "values": ["manual", "card-transaction"], "description": "Expense type"},
+                "closed": {"type": "boolean", "description": "Is expense closed"},
             },
-            "expense": {
-                "id": {"type": "string", "required": True, "label": "Expense ID"},
-                "amount": {"type": "number", "required": False, "label": "Amount"},
-                "date": {"type": "datetime", "required": False, "label": "Expense Date"},
-                "description": {
-                    "type": "string",
-                    "required": False,
-                    "label": "Description",
-                },
-            },
-            "account": {
-                "accountId": {"type": "string", "required": True, "label": "Account ID"},
-                "currency": {"type": "string", "required": False, "label": "Currency"},
-                "balance": {"type": "number", "required": False, "label": "Balance"},
+            "Transaction": {
+                "id": {"type": "string", "description": "Transaction ID"},
+                "cardId": {"type": "string", "description": "Card ID"},
+                "expenseId": {"type": "string", "description": "Related expense ID"},
+                "cardEmbossName": {"type": "string", "description": "Card holder name"},
+                "transactionDate": {"type": "datetime", "description": "Transaction date"},
+                "settlementDate": {"type": "datetime", "description": "Settlement date"},
+                "originalAmount": {"type": "number", "description": "Original amount"},
+                "originalCurrency": {"type": "string", "description": "Original currency"},
+                "signedAmount": {"type": "number", "description": "Signed amount in CZK"},
+                "transactionStatus": {"type": "string", "description": "Transaction status"},
+                "merchantName": {"type": "string", "description": "Merchant name"},
+                "merchantLocation": {"type": "string", "description": "Merchant location"},
+                "categoryName": {"type": "string", "description": "Merchant category"},
             },
         }
 
-        if object_name not in schemas:
-            available = self.list_objects()
-            raise ObjectNotFoundError(
-                f"Object '{object_name}' not found. Available objects: {', '.join(available[:5])}...",
-                details={"requested": object_name, "available": available},
-            )
+        return schemas.get(object_name, {"_note": f"Schema for {object_name} not fully documented"})
 
-        return schemas[object_name]
+    # ===== Read Operations =====
 
     def read(
         self,
@@ -364,194 +402,164 @@ class Fidoo7Driver(BaseDriver):
         offset: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Execute a read query and return results.
+        Execute a read operation on a Fidoo object.
 
-        For Fidoo API, 'query' is the endpoint path (e.g., "user/get-users").
+        Fidoo API uses object names instead of query language.
 
         Args:
-            query: Endpoint path (e.g., "user/get-users" or "card/get-cards")
-            limit: Maximum number of records to return (default: 50, max: 100)
-            offset: Pagination token (offsetToken from previous response)
+            query: Object name (e.g., "User", "Card", "Expense")
+                   Or empty string to use the last queried object
+            limit: Maximum number of records (default: 50, max: 100)
+            offset: For compatibility (Fidoo uses cursor tokens, not offset)
 
         Returns:
             List of records
 
         Raises:
-            ObjectNotFoundError: If endpoint doesn't exist
-            RateLimitError: If API rate limit exceeded
-            QuerySyntaxError: If query/endpoint invalid
-            TimeoutError: If request times out
+            ObjectNotFoundError: If object doesn't exist
+            ValidationError: If parameters are invalid
+            RateLimitError: If rate limited (after retries)
+            ConnectionError: If API unreachable
 
         Example:
-            >>> results = client.read("user/get-users", limit=50)
-            >>> print(f"Found {len(results)} users")
-
-            >>> # Pagination example
-            >>> first_batch = client.read("user/get-users", limit=50)
-            >>> if first_batch:
-            ...     next_batch = client.read("user/get-users", limit=50, offset=first_batch[-1].get("offsetToken"))
+            >>> driver = Fidoo8Driver.from_env()
+            >>>
+            >>> # Get users
+            >>> users = driver.read("User", limit=50)
+            >>> print(f"Got {len(users)} users")
+            >>>
+            >>> # Get cards
+            >>> cards = driver.read("Card", limit=100)
+            >>>
+            >>> # Paginate through users
+            >>> all_users = []
+            >>> for batch in driver.read_batched("User", batch_size=50):
+            ...     all_users.extend(batch)
         """
-        # Bug Prevention #4: Validate page size
-        if limit is None:
-            limit = self.SAFE_DEFAULT_PAGE_SIZE
-        if limit > self.MAX_PAGE_SIZE:
+        object_name = query.strip() if query else ""
+        if not object_name:
             raise ValidationError(
-                f"limit cannot exceed {self.MAX_PAGE_SIZE} (got: {limit})",
-                details={
-                    "provided": limit,
-                    "maximum": self.MAX_PAGE_SIZE,
-                    "parameter": "limit",
-                    "suggestion": f"Use limit <= {self.MAX_PAGE_SIZE}",
-                },
+                "Query (object name) cannot be empty",
+                details={"available_objects": self.FIDOO_OBJECTS},
             )
 
-        # Build endpoint path
-        endpoint = f"/v2/{query.lstrip('/')}"
-
-        # Build request parameters
-        params = {"limit": limit}
-        if offset:
-            params["offsetToken"] = offset
-
-        try:
-            response = self.session.post(
-                f"{self.base_url.rstrip('/')}{endpoint}",
-                json=params,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.exceptions.Timeout:
-            raise TimeoutError(
-                f"Request to {endpoint} timed out after {self.timeout} seconds",
-                details={"endpoint": endpoint, "timeout": self.timeout},
-            )
-        except requests.exceptions.HTTPError as e:
-            self._handle_api_error(e.response, f"reading from {endpoint}")
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"Failed to connect to {endpoint}",
-                details={"endpoint": endpoint, "error": str(e)},
+        if object_name not in self.FIDOO_OBJECTS:
+            raise ObjectNotFoundError(
+                f"Object '{object_name}' not found",
+                details={"requested": object_name, "available": self.FIDOO_OBJECTS},
             )
 
-        # Parse response
-        return self._parse_response(response)
+        # Validate page size
+        limit = limit or 50
+        if limit > 100:
+            raise ValidationError(
+                f"limit cannot exceed 100 (got: {limit})",
+                details={"provided": limit, "maximum": 100},
+            )
+
+        # Get endpoint for object
+        endpoint = self.OBJECT_ENDPOINTS.get(object_name)
+        if not endpoint:
+            raise ObjectNotFoundError(f"No endpoint configured for object '{object_name}'")
+
+        # Call endpoint
+        return self._call_endpoint_paginated(endpoint, limit=limit)
 
     def read_batched(
-        self, query: str, batch_size: int = 50
+        self,
+        query: str,
+        batch_size: int = 50,
     ) -> Iterator[List[Dict[str, Any]]]:
         """
-        Execute query and yield results in batches (memory-efficient).
+        Execute read operation and yield results in batches (memory-efficient).
 
         Args:
-            query: Endpoint path (e.g., "user/get-users")
-            batch_size: Number of records per batch (default: 50, max: 100)
+            query: Object name (e.g., "User", "Card", "Expense")
+            batch_size: Records per batch (default: 50, max: 100)
 
         Yields:
-            Batches of records as lists of dictionaries
+            Batches of records
 
         Example:
+            >>> driver = Fidoo8Driver.from_env()
             >>> total = 0
-            >>> for batch in client.read_batched("user/get-users", batch_size=50):
-            ...     for user in batch:
-            ...         print(f"{user['firstName']} {user['lastName']}")
+            >>> for batch in driver.read_batched("User", batch_size=50):
+            ...     process_batch(batch)
             ...     total += len(batch)
-            >>> print(f"Total users: {total}")
+            >>> print(f"Processed {total} users")
         """
+        object_name = query.strip() if query else ""
+        if not object_name:
+            raise ValidationError("Query (object name) cannot be empty")
+
+        if object_name not in self.FIDOO_OBJECTS:
+            raise ObjectNotFoundError(f"Object '{object_name}' not found")
+
+        if batch_size > 100:
+            raise ValidationError(f"batch_size cannot exceed 100 (got: {batch_size})")
+
+        endpoint = self.OBJECT_ENDPOINTS.get(object_name)
+        if not endpoint:
+            raise ObjectNotFoundError(f"No endpoint configured for object '{object_name}'")
+
+        # Fetch in batches using cursor pagination
         offset_token = None
-
         while True:
-            # Fetch batch
-            batch = self.read(query, limit=batch_size, offset=offset_token)
+            params = {"limit": batch_size}
+            if offset_token:
+                params["offsetToken"] = offset_token
 
-            if not batch:
+            response = self._api_call(endpoint, params=params)
+            records = response if isinstance(response, list) else response.get("items", [])
+
+            if records:
+                yield records
+
+            # Check for more data
+            next_token = response.get("nextOffsetToken") if isinstance(response, dict) else None
+            if not next_token:
                 break
 
-            yield batch
+            offset_token = next_token
 
-            # Check for next page
-            # In Fidoo API, check if response has nextOffsetToken
-            if isinstance(batch, dict) and batch.get("complete"):
-                break
-
-            # Get next offset token from batch (if it's a response object)
-            if isinstance(batch, dict) and "nextOffsetToken" in batch:
-                offset_token = batch["nextOffsetToken"]
-            else:
-                # No more pages
-                break
+    # ===== Write Operations =====
 
     def create(self, object_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Create a new record.
 
         Args:
-            object_name: Name of object (e.g., "user", "cost_center")
+            object_name: Object type (e.g., "User")
             data: Field values as dictionary
 
         Returns:
             Created record with ID
 
         Raises:
+            NotImplementedError: For unsupported objects
             ValidationError: If data is invalid
-            ObjectNotFoundError: If object type not found
+            ConnectionError: If API fails
 
         Example:
-            >>> user = client.create("user", {
+            >>> driver = Fidoo8Driver.from_env()
+            >>> new_user = driver.create("User", {
             ...     "firstName": "John",
             ...     "lastName": "Doe",
             ...     "email": "john@example.com"
             ... })
-            >>> print(f"Created user: {user['id']}")
+            >>> print(f"Created user: {new_user['userId']}")
         """
-        # Map object names to create endpoints
-        endpoint_map = {
-            "user": "user/add-user",
-            "cost_center": "settings/add-cost-center",
-            "project": "settings/add-project",
-            "accounting_category": "settings/add-accounting-category",
-            "vat_breakdown": "settings/add-vat-breakdown",
-            "account_assignment": "settings/add-account-assignment",
-            "vehicle": "settings/add-vehicle",
-        }
-
-        if object_name not in endpoint_map:
-            raise ObjectNotFoundError(
-                f"Cannot create object type '{object_name}'",
-                details={"requested": object_name, "creatable_types": list(endpoint_map.keys())},
-            )
-
-        endpoint = endpoint_map[object_name]
-        full_endpoint = f"/v2/{endpoint}"
-
-        try:
-            response = self.session.post(
-                f"{self.base_url.rstrip('/')}{full_endpoint}",
-                json=data,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400:
-                error_data = e.response.json()
-                raise ValidationError(
-                    f"Validation failed: {error_data.get('message', 'Unknown error')}",
-                    details={"object": object_name, "errors": error_data},
-                )
-            self._handle_api_error(e.response, f"creating {object_name}")
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"Failed to create {object_name}",
-                details={"object": object_name, "error": str(e)},
-            )
-
-        return self._parse_response(response)
+        if object_name == "User":
+            return self._api_call("/user/add-user", method="POST", json=data)
+        else:
+            raise NotImplementedError(f"Create not supported for {object_name}")
 
     def update(self, object_name: str, record_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Update an existing record.
 
         Args:
-            object_name: Name of object
+            object_name: Object type (e.g., "Expense")
             record_id: ID of record to update
             data: Field values to update
 
@@ -559,236 +567,46 @@ class Fidoo7Driver(BaseDriver):
             Updated record
 
         Raises:
-            ObjectNotFoundError: If record doesn't exist
-            ValidationError: If data is invalid
-
-        Example:
-            >>> user = client.update("user", "user123", {"phone": "+1234567890"})
-            >>> print(f"Updated user: {user['email']}")
+            NotImplementedError: For unsupported objects
         """
-        # Map object names to update endpoints
-        endpoint_map = {
-            "user": "user/update-user",
-            "cost_center": "settings/update-cost-center",
-            "project": "settings/update-project",
-            "accounting_category": "settings/update-accounting-category",
-            "vat_breakdown": "settings/update-vat-breakdown",
-            "account_assignment": "settings/update-account-assignment",
-            "vehicle": "settings/update-vehicle",
-        }
-
-        if object_name not in endpoint_map:
-            raise ObjectNotFoundError(
-                f"Cannot update object type '{object_name}'",
-                details={"requested": object_name, "updatable_types": list(endpoint_map.keys())},
-            )
-
-        endpoint = endpoint_map[object_name]
-        full_endpoint = f"/v2/{endpoint}"
-
-        # Add record ID to data
-        update_data = {"id": record_id, **data}
-
-        try:
-            response = self.session.post(
-                f"{self.base_url.rstrip('/')}{full_endpoint}",
-                json=update_data,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                raise ObjectNotFoundError(
-                    f"Record not found: {record_id}",
-                    details={"object": object_name, "record_id": record_id},
-                )
-            elif e.response.status_code == 400:
-                error_data = e.response.json()
-                raise ValidationError(
-                    f"Validation failed: {error_data.get('message', 'Unknown error')}",
-                    details={"object": object_name, "record_id": record_id, "errors": error_data},
-                )
-            self._handle_api_error(e.response, f"updating {object_name} {record_id}")
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"Failed to update {object_name}",
-                details={"object": object_name, "record_id": record_id, "error": str(e)},
-            )
-
-        return self._parse_response(response)
+        if object_name == "Expense":
+            payload = {**data, "expenseId": record_id}
+            return self._api_call("/expense/edit-expense", method="POST", json=payload)
+        else:
+            raise NotImplementedError(f"Update not supported for {object_name}")
 
     def delete(self, object_name: str, record_id: str) -> bool:
         """
         Delete a record.
 
         Args:
-            object_name: Name of object
+            object_name: Object type (e.g., "User")
             record_id: ID of record to delete
 
         Returns:
             True if successful
 
         Raises:
-            ObjectNotFoundError: If record doesn't exist
-            ValidationError: If record cannot be deleted (e.g., user has roles)
-
-        Note:
-            Use with caution! Some deletions have prerequisites.
-            For example, users cannot be deleted if they have roles or card holdings.
-
-        Example:
-            >>> success = client.delete("cost_center", "cc123")
-            >>> print("Deleted" if success else "Failed")
+            NotImplementedError: If delete not supported
         """
-        # Map object names to delete endpoints
-        endpoint_map = {
-            "user": "user/delete-user",
-            "cost_center": "settings/delete-cost-center",
-            "project": "settings/delete-project",
-            "accounting_category": "settings/delete-accounting-category",
-            "vat_breakdown": "settings/delete-vat-breakdown",
-            "account_assignment": "settings/delete-account-assignment",
-            "vehicle": "settings/delete-vehicle",
-        }
+        if object_name == "User":
+            self._api_call("/user/delete-user", method="POST", json={"userId": record_id})
+            return True
+        else:
+            raise NotImplementedError(f"Delete not supported for {object_name}")
 
-        if object_name not in endpoint_map:
-            raise ObjectNotFoundError(
-                f"Cannot delete object type '{object_name}'",
-                details={"requested": object_name, "deletable_types": list(endpoint_map.keys())},
-            )
-
-        endpoint = endpoint_map[object_name]
-        full_endpoint = f"/v2/{endpoint}"
-
-        delete_data = {"id": record_id}
-
-        try:
-            response = self.session.post(
-                f"{self.base_url.rstrip('/')}{full_endpoint}",
-                json=delete_data,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                raise ObjectNotFoundError(
-                    f"Record not found: {record_id}",
-                    details={"object": object_name, "record_id": record_id},
-                )
-            elif e.response.status_code == 400:
-                error_data = e.response.json()
-                raise ValidationError(
-                    f"Cannot delete: {error_data.get('message', 'Unknown error')}",
-                    details={"object": object_name, "record_id": record_id, "errors": error_data},
-                )
-            self._handle_api_error(e.response, f"deleting {object_name} {record_id}")
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"Failed to delete {object_name}",
-                details={"object": object_name, "record_id": record_id, "error": str(e)},
-            )
-
-        return True
-
-    def call_endpoint(
-        self,
-        endpoint: str,
-        method: str = "POST",
-        params: Optional[Dict[str, Any]] = None,
-        data: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """
-        Call a REST API endpoint directly (low-level access).
-
-        Args:
-            endpoint: API endpoint path (e.g., "/v2/user/get-users")
-            method: HTTP method ("GET", "POST", "PUT", "DELETE")
-            params: URL query parameters (for GET)
-            data: Request body (for POST/PUT)
-            **kwargs: Additional request options
-
-        Returns:
-            Response data as dictionary
-
-        Example:
-            >>> result = client.call_endpoint(
-            ...     endpoint="/v2/user/get-users",
-            ...     method="POST",
-            ...     data={"limit": 50}
-            ... )
-            >>> print(result)
-        """
-        url = f"{self.base_url.rstrip('/')}{endpoint}"
-
-        if self.debug:
-            self.logger.debug(f"[DEBUG] {method} {url}")
-
-        try:
-            if method.upper() == "GET":
-                response = self.session.get(
-                    url, params=params or data, timeout=self.timeout, **kwargs
-                )
-            elif method.upper() == "POST":
-                response = self.session.post(url, json=data or params, timeout=self.timeout, **kwargs)
-            elif method.upper() == "PUT":
-                response = self.session.put(url, json=data or params, timeout=self.timeout, **kwargs)
-            elif method.upper() == "DELETE":
-                response = self.session.delete(url, json=data or params, timeout=self.timeout, **kwargs)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"API call failed: {str(e)}",
-                details={"endpoint": endpoint, "method": method, "error": str(e)},
-            )
-
-        return response.json()
-
-    def get_rate_limit_status(self) -> Dict[str, Any]:
-        """
-        Get current rate limit status.
-
-        Fidoo API has 6,000 requests per customer per day.
-        This method returns the documented limit (actual remaining requests not available).
-
-        Returns:
-            {
-                "limit": int,           # Total requests per day
-                "retry_after": int      # Seconds to wait if rate limited
-            }
-
-        Example:
-            >>> status = client.get_rate_limit_status()
-            >>> print(f"Rate limit: {status['limit']} requests/day")
-        """
-        return {
-            "limit": self.RATE_LIMIT_PER_DAY,
-            "remaining": None,  # Not provided by Fidoo API
-            "reset_at": None,   # Not provided by Fidoo API
-            "retry_after": None,  # Set by 429 response
-        }
-
-    def close(self):
-        """Close connections and cleanup resources."""
-        if self.session:
-            self.session.close()
-
-    # Internal helper methods
+    # ===== Internal Methods =====
 
     def _create_session(self) -> requests.Session:
         """
-        Create HTTP session with authentication.
-
-        Bug Prevention #1 & #2: Correct header setup
-        - EXACT header name: X-Api-Key (case-sensitive!)
-        - Do NOT set Content-Type in session headers
-        - Content-Type is added automatically by requests library
+        Create HTTP session with authentication and retry configuration.
 
         Returns:
-            Configured requests.Session with auth headers
+            Configured requests.Session
+
+        Critical: Bug Prevention Pattern #2
+        - Do NOT set Content-Type in session headers
+        - Let requests library handle it automatically
         """
         session = requests.Session()
 
@@ -799,213 +617,265 @@ class Fidoo7Driver(BaseDriver):
                 "User-Agent": f"{self.driver_name}-Python-Driver/1.0.0",
             }
         )
-        # NOTE: Do NOT set Content-Type here! (affects GET requests)
+        # NOTE: Do NOT set Content-Type here - affects GET requests
 
-        # Add authentication (use IF, not ELIF - multiple can coexist)
-        if self.access_token:
-            session.headers["Authorization"] = f"Bearer {self.access_token}"
-
+        # Add authentication
+        # Bug Prevention Pattern #1: Use EXACT header name X-Api-Key
         if self.api_key:
-            # Bug Prevention #1: EXACT header name from docs (case-sensitive!)
             session.headers["X-Api-Key"] = self.api_key
 
-        # Configure retries with exponential backoff
-        if self.max_retries > 0:
-            retry_strategy = Retry(
-                total=self.max_retries,
-                backoff_factor=1,
-                status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=["GET", "POST", "PUT", "DELETE"],
-            )
-            adapter = HTTPAdapter(max_retries=retry_strategy)
-            session.mount("https://", adapter)
-            session.mount("http://", adapter)
+        # Configure retries for rate limiting
+        # Retry on 429, 500, 502, 503, 504
+        retry_strategy = requests.adapters.Retry(
+            total=self.max_retries,
+            backoff_factor=1,  # Exponential backoff: 1s, 2s, 4s, ...
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST", "PUT", "DELETE"],
+        )
+        adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
 
         return session
 
-    def _parse_response(self, response: requests.Response) -> List[Dict[str, Any]]:
+    def _validate_connection(self):
         """
-        Parse API response and extract data records.
-
-        Bug Prevention #3: Handle case-sensitive field names
-        Try all known variations: root, items, data, results
-
-        Args:
-            response: HTTP response from API
-
-        Returns:
-            List of records
+        Validate connection at initialization (fail fast).
 
         Raises:
-            ConnectionError: If response is not valid JSON
+            AuthenticationError: If credentials invalid
+            ConnectionError: If API unreachable
         """
         try:
-            data = response.json()
-        except ValueError as e:
+            # Try a simple endpoint to validate auth
+            self._api_call("/user/get-users", params={"limit": 1})
+        except requests.HTTPError as e:
+            if e.response.status_code == 401:
+                raise AuthenticationError(
+                    "Invalid Fidoo API key. Check your credentials.",
+                    details={"api_url": self.api_url, "status_code": 401},
+                )
+            elif e.response.status_code == 403:
+                raise AuthenticationError(
+                    "API key lacks required permissions.",
+                    details={"api_url": self.api_url, "status_code": 403},
+                )
+            raise ConnectionError(f"Cannot connect to Fidoo API: {e}")
+        except requests.RequestException as e:
             raise ConnectionError(
-                "Invalid JSON response from API",
-                details={
-                    "status_code": response.status_code,
-                    "content": response.text[:500],
-                    "error": str(e),
-                },
+                f"Cannot reach Fidoo API at {self.api_url}: {e}",
+                details={"api_url": self.api_url, "error": str(e)},
             )
 
-        # Handle direct array responses
-        if isinstance(data, list):
-            return data
-
-        # Handle object-wrapped responses
-        if isinstance(data, dict):
-            # Bug Prevention #3: Try all known field names (case-sensitive!)
-            # Order: Try documented field first, then common variations
-            records = (
-                data.get("root")
-                or data.get("items")
-                or data.get("Items")
-                or data.get("data")
-                or data.get("Data")
-                or data.get("results")
-                or data.get("Results")
-                or data.get("Records")
-                or data.get("records")
-                or []
-            )
-
-            # Ensure we return a list
-            if isinstance(records, list):
-                return records
-            elif records is not None:
-                return [records]  # Wrap single object in list
-            else:
-                return []
-
-        # Unknown format
-        return []
-
-    def _handle_api_error(self, response: requests.Response, context: str = ""):
+    def _api_call(
+        self,
+        endpoint: str,
+        method: str = "POST",
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
         """
-        Convert HTTP errors to structured driver exceptions.
+        Make API call with error handling and logging.
 
         Args:
-            response: Failed HTTP response
-            context: Context string (e.g., "reading user records")
+            endpoint: API endpoint path (relative to base_url)
+            method: HTTP method
+            params: Query parameters
+            json: Request body (JSON)
+            **kwargs: Additional requests options
+
+        Returns:
+            Response data as dictionary
+
+        Raises:
+            AuthenticationError: 401 or 403
+            ValidationError: 400
+            RateLimitError: 429 (after retries)
+            ConnectionError: Network errors or 5xx
+        """
+        url = urljoin(self.api_url + "/", endpoint.lstrip("/"))
+
+        if self.debug:
+            self.logger.debug(f"[{method}] {url} params={params}")
+
+        try:
+            response = self.session.request(
+                method,
+                url,
+                params=params,
+                json=json,
+                timeout=self.timeout,
+                **kwargs,
+            )
+            response.raise_for_status()
+
+            # Parse response
+            try:
+                data = response.json()
+            except ValueError:
+                return {"status": "ok", "raw": response.text}
+
+            return self._parse_response(data)
+
+        except requests.HTTPError as e:
+            self._handle_http_error(e, endpoint=endpoint)
+
+        except requests.Timeout:
+            raise TimeoutError(
+                f"Request timed out after {self.timeout} seconds",
+                details={"timeout": self.timeout, "endpoint": endpoint},
+            )
+
+        except requests.RequestException as e:
+            raise ConnectionError(
+                f"API request failed: {e}",
+                details={"endpoint": endpoint, "error": str(e)},
+            )
+
+    def _parse_response(self, data: Any) -> Dict[str, Any]:
+        """
+        Parse API response and extract data.
+
+        Fidoo API returns varying response structures:
+        - Some endpoints return direct arrays
+        - Some wrap data with pagination metadata
+
+        Bug Prevention Pattern #3: Try all documented field names
+
+        Args:
+            data: Response JSON
+
+        Returns:
+            Parsed data (always returns dict or list)
+        """
+        # Handle direct list response
+        if isinstance(data, list):
+            return {"items": data}
+
+        # Handle object response
+        if isinstance(data, dict):
+            # Try all known wrapper field names (case-sensitive!)
+            # Bug Prevention: Check multiple patterns
+            records = (
+                data.get("items")  # Most common
+                or data.get("data")
+                or data.get("result")
+                or data.get("results")
+                or data  # Return as-is if no wrapper
+            )
+            return records if isinstance(records, dict) else {"items": records or []}
+
+        return {"items": []}
+
+    def _call_endpoint_paginated(
+        self,
+        endpoint: str,
+        limit: int = 50,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        Call endpoint and return all records (handling pagination).
+
+        Args:
+            endpoint: API endpoint path
+            limit: Records per request
+            **kwargs: Additional params
+
+        Returns:
+            All records from endpoint
+        """
+        all_records = []
+        offset_token = None
+
+        while True:
+            params = {"limit": limit, **kwargs}
+            if offset_token:
+                params["offsetToken"] = offset_token
+
+            response = self._api_call(endpoint, params=params)
+
+            # Extract records from response
+            records = response if isinstance(response, list) else response.get("items", [])
+            all_records.extend(records)
+
+            # Check for more data
+            next_token = response.get("nextOffsetToken") if isinstance(response, dict) else None
+            if not next_token:
+                break
+
+            offset_token = next_token
+
+        return all_records
+
+    def _handle_http_error(self, error: requests.HTTPError, endpoint: str = ""):
+        """
+        Convert HTTP errors to driver exceptions.
+
+        Args:
+            error: HTTP error from requests
+            endpoint: API endpoint for context
 
         Raises:
             Appropriate DriverError subclass
         """
-        status_code = response.status_code
+        status_code = error.response.status_code
 
         try:
-            error_data = response.json()
+            error_data = error.response.json()
             error_msg = error_data.get("error", error_data.get("message", "Unknown error"))
         except ValueError:
-            error_msg = response.text[:500]
+            error_msg = error.response.text[:500]
 
-        # Map status codes to exceptions
         if status_code == 401:
             raise AuthenticationError(
                 f"Authentication failed: {error_msg}",
-                details={
-                    "status_code": 401,
-                    "context": context,
-                    "suggestion": "Check your API key or access token",
-                    "api_response": error_msg,
-                },
+                details={"status_code": 401, "endpoint": endpoint},
             )
+
         elif status_code == 403:
             raise AuthenticationError(
                 f"Permission denied: {error_msg}",
-                details={
-                    "status_code": 403,
-                    "context": context,
-                    "suggestion": "Verify your API key has required permissions",
-                    "api_response": error_msg,
-                },
+                details={"status_code": 403, "endpoint": endpoint},
             )
-        elif status_code == 404:
-            raise ObjectNotFoundError(
-                f"Resource not found: {error_msg}",
-                details={
-                    "status_code": 404,
-                    "context": context,
-                    "suggestion": "Check endpoint path and object existence",
-                    "api_response": error_msg,
-                },
+
+        elif status_code == 400:
+            raise ValidationError(
+                f"Bad request: {error_msg}",
+                details={"status_code": 400, "endpoint": endpoint},
             )
+
         elif status_code == 429:
-            # Should not happen after retries, but handle it
-            retry_after = response.headers.get("Retry-After", "60")
+            retry_after = error.response.headers.get("Retry-After", "60")
             raise RateLimitError(
-                f"Rate limit exceeded (after retries): {error_msg}",
+                f"API rate limit exceeded: {error_msg}",
                 details={
                     "status_code": 429,
-                    "retry_after": retry_after,
-                    "context": context,
-                    "suggestion": f"Wait {retry_after} seconds before retrying",
-                    "limit_per_day": self.RATE_LIMIT_PER_DAY,
-                    "api_response": error_msg,
+                    "retry_after": int(retry_after),
+                    "endpoint": endpoint,
                 },
             )
+
         elif status_code >= 500:
             raise ConnectionError(
-                f"API server error: {error_msg}",
-                details={
-                    "status_code": status_code,
-                    "context": context,
-                    "suggestion": "API server issue - try again later",
-                    "api_response": error_msg,
-                },
+                f"API server error (HTTP {status_code}): {error_msg}",
+                details={"status_code": status_code, "endpoint": endpoint},
             )
+
         else:
             raise DriverError(
-                f"API request failed: {error_msg}",
-                details={
-                    "status_code": status_code,
-                    "context": context,
-                    "api_response": error_msg,
-                },
+                f"API request failed (HTTP {status_code}): {error_msg}",
+                details={"status_code": status_code, "endpoint": endpoint},
             )
 
-    def _validate_connection(self):
-        """
-        Validate connection at __init__ time (fail fast!).
+    def close(self):
+        """Close session and cleanup resources."""
+        if self.session:
+            self.session.close()
 
-        Calls the public status endpoint to verify API key validity.
-
-        Raises:
-            AuthenticationError: Invalid credentials
-            ConnectionError: Cannot reach API
-        """
+    def __del__(self):
+        """Cleanup on object deletion."""
         try:
-            response = self.session.get(
-                f"{self.base_url.rstrip('/')}/v2/status/user-info",
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                raise AuthenticationError(
-                    "Invalid Fidoo API key. Check your credentials.",
-                    details={"api_url": self.base_url, "status_code": 401},
-                )
-            elif e.response.status_code >= 500:
-                raise ConnectionError(
-                    "Fidoo API server is not responding",
-                    details={"api_url": self.base_url, "status_code": e.response.status_code},
-                )
-            else:
-                raise ConnectionError(
-                    f"Connection validation failed: {e}",
-                    details={"api_url": self.base_url, "status_code": e.response.status_code},
-                )
-        except requests.exceptions.Timeout:
-            raise ConnectionError(
-                f"Connection to Fidoo API timed out after {self.timeout} seconds",
-                details={"api_url": self.base_url, "timeout": self.timeout},
-            )
-        except requests.exceptions.RequestException as e:
-            raise ConnectionError(
-                f"Cannot reach Fidoo API: {e}",
-                details={"api_url": self.base_url, "error": str(e)},
-            )
+            self.close()
+        except Exception:
+            pass

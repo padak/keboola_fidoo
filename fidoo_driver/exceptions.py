@@ -1,4 +1,13 @@
-from typing import Any, Dict, Optional
+"""
+Fidoo8Driver Exception Hierarchy
+
+All driver errors inherit from DriverError and include:
+- Clear message (for agents to understand)
+- Actionable suggestions
+- Structured details dict (for programmatic handling)
+"""
+
+from typing import Optional, Dict, Any
 
 
 class DriverError(Exception):
@@ -20,8 +29,10 @@ class AuthenticationError(DriverError):
 
     Agent should:
     - Inform user to check credentials
-    - Check .env file exists and has correct keys
+    - Check environment variables are set correctly
+    - Verify API key has required permissions
     """
+
     pass
 
 
@@ -34,17 +45,19 @@ class ConnectionError(DriverError):
     - Suggest checking api_url configuration
     - Wait and retry later
     """
+
     pass
 
 
 class ObjectNotFoundError(DriverError):
     """
-    Requested object/endpoint doesn't exist.
+    Requested object/table doesn't exist.
 
     Agent should:
     - Call list_objects() to see what's available
     - Suggest similar object names (fuzzy match)
     """
+
     pass
 
 
@@ -56,18 +69,19 @@ class FieldNotFoundError(DriverError):
     - Call get_fields(object_name) to see available fields
     - Suggest similar field names
     """
+
     pass
 
 
 class QuerySyntaxError(DriverError):
     """
-    Invalid query syntax or parameters.
+    Invalid query syntax.
 
     Agent should:
-    - Fix query based on error message
+    - Fix query syntax based on error message
     - Consult driver README for query language rules
-    - Regenerate query
     """
+
     pass
 
 
@@ -83,6 +97,7 @@ class RateLimitError(DriverError):
     - Suggest reducing batch size or adding delays
     - Show retry_after seconds
     """
+
     pass
 
 
@@ -98,6 +113,7 @@ class ValidationError(DriverError):
     - Fix data types
     - Regenerate create/update call
     """
+
     pass
 
 
@@ -110,4 +126,5 @@ class TimeoutError(DriverError):
     - Suggest increasing timeout parameter
     - Retry with smaller dataset
     """
+
     pass

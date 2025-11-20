@@ -9,26 +9,26 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
-from fidoo_driver import Fidoo7Driver, AuthenticationError
+from fidoo_driver import Fidoo8Driver, AuthenticationError
 
 # Load .env file
 load_dotenv()
 
-# Endpoint mapping
-ENDPOINTS = {
-    "user": "user/get-users",
-    "card": "card/get-cards",
-    "transaction": "transaction/get-card-transactions",
-    "cash_transaction": "transaction/get-cash-transactions",
-    "expense": "expense/get-expenses",
-    "travel_report": "travel/get-travel-reports",
-    "account": "account/get-accounts",
-    "cost_center": "settings/get-cost-centers",
-    "project": "settings/get-projects",
-}
+# Object names (new driver uses these directly)
+OBJECTS = [
+    "User",
+    "Card",
+    "Transaction",
+    "CashTransaction",
+    "Expense",
+    "TravelReport",
+    "CostCenter",
+    "Project",
+]
 
 def main():
     api_key = os.getenv('FIDOO_API') or os.getenv('FIDOO_API_KEY')
+    base_url = os.getenv('FIDOO_BASE_URL') or os.getenv('FIDOO_API_URL')
 
     if not api_key:
         print("ERROR: Set FIDOO_API or FIDOO_API_KEY in .env file")
@@ -39,12 +39,12 @@ def main():
     print("-" * 50)
 
     try:
-        driver = Fidoo7Driver(api_key=api_key)
+        driver = Fidoo8Driver(api_key=api_key, base_url=base_url)
 
         total = 0
-        for obj_name, endpoint in ENDPOINTS.items():
+        for obj_name in OBJECTS:
             try:
-                records = driver.read(endpoint, limit=100)
+                records = driver.read(obj_name, limit=100)
                 count = len(records)
                 total += count
                 print(f"{obj_name:<20} {count:<10} OK")

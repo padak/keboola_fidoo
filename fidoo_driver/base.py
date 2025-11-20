@@ -1,26 +1,28 @@
 """
-Base Driver Class - Abstract Interface
+Base Driver Interface for Fidoo8Driver
 
-Defines the contract that all drivers must implement.
+Defines the abstract interface that all drivers must implement.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Iterator
 from enum import Enum
-from typing import Any, Dict, Iterator, List, Optional
 
 
 class PaginationStyle(Enum):
     """How the driver handles pagination"""
-    NONE = "none"              # No pagination support
-    OFFSET = "offset"          # LIMIT/OFFSET style (SQL)
-    CURSOR = "cursor"          # Cursor-based (Salesforce, GraphQL)
-    PAGE_NUMBER = "page"       # Page-based (REST APIs)
+
+    NONE = "none"  # No pagination support
+    OFFSET = "offset"  # LIMIT/OFFSET style (SQL)
+    CURSOR = "cursor"  # Cursor-based (Fidoo, GraphQL)
+    PAGE_NUMBER = "page"  # Page-based (REST APIs)
 
 
 @dataclass
 class DriverCapabilities:
     """What the driver can do"""
+
     read: bool = True
     write: bool = False
     update: bool = False
@@ -28,7 +30,7 @@ class DriverCapabilities:
     batch_operations: bool = False
     streaming: bool = False
     pagination: PaginationStyle = PaginationStyle.NONE
-    query_language: Optional[str] = None  # "SOQL", "SQL", "MongoDB Query", None
+    query_language: Optional[str] = None
     max_page_size: Optional[int] = None
     supports_transactions: bool = False
     supports_relationships: bool = False
@@ -66,22 +68,15 @@ class BaseDriver(ABC):
         self.max_retries = max_retries
         self.debug = debug
 
-        # Validate credentials at init time (fail fast!)
-        self._validate_connection()
-
     @classmethod
-    def from_env(cls, **kwargs) -> 'BaseDriver':
+    def from_env(cls, **kwargs) -> "BaseDriver":
         """
         Create driver instance from environment variables.
-
-        Example:
-            # Reads FIDOO_API_URL and FIDOO_API_KEY from os.environ
-            client = Fidoo7Driver.from_env()
 
         Raises:
             AuthenticationError: If required env vars are missing
         """
-        pass  # Implementation in subclass
+        pass
 
     @abstractmethod
     def get_capabilities(self) -> DriverCapabilities:
@@ -90,11 +85,6 @@ class BaseDriver(ABC):
 
         Returns:
             DriverCapabilities with boolean flags for features
-
-        Example:
-            capabilities = client.get_capabilities()
-            if capabilities.write:
-                # Agent can generate create() calls
         """
         pass
 
@@ -103,14 +93,10 @@ class BaseDriver(ABC):
     @abstractmethod
     def list_objects(self) -> List[str]:
         """
-        Discover all available objects/endpoints/resources.
+        Discover all available objects/tables/entities.
 
         Returns:
-            List of object names (e.g., ["user", "card", "expense"])
-
-        Example:
-            objects = client.list_objects()
-            # ["user", "card", "transaction", "expense", ...]
+            List of object names
         """
         pass
 
@@ -123,27 +109,10 @@ class BaseDriver(ABC):
             object_name: Name of object (case-sensitive!)
 
         Returns:
-            Dictionary with field definitions:
-            {
-                "field_name": {
-                    "type": "string|integer|float|boolean|datetime|...",
-                    "label": "Human-readable name",
-                    "required": bool,
-                    "nullable": bool,
-                    "max_length": int (for strings),
-                    "references": str (for foreign keys)
-                }
-            }
+            Dictionary with field definitions
 
         Raises:
             ObjectNotFoundError: If object doesn't exist
-
-        Example:
-            fields = client.get_fields("user")
-            # Returns: {
-            #   "firstName": {"type": "string", "required": False, "label": "First Name"},
-            #   ...
-            # }
         """
         pass
 
@@ -160,7 +129,7 @@ class BaseDriver(ABC):
         Execute a read query and return results.
 
         Args:
-            query: Query in driver's native language or endpoint path
+            query: Query in driver's native language
             limit: Maximum number of records to return
             offset: Number of records to skip (for pagination)
 
@@ -170,10 +139,6 @@ class BaseDriver(ABC):
         Raises:
             QuerySyntaxError: Invalid query syntax
             RateLimitError: API rate limit exceeded (after retries)
-
-        Example:
-            results = client.read("user/get-users", limit=100)
-            # Returns: [{"id": "...", "firstName": "John", ...}, ...]
         """
         pass
 
@@ -193,13 +158,6 @@ class BaseDriver(ABC):
         Raises:
             NotImplementedError: If driver doesn't support write operations
             ValidationError: If data is invalid
-
-        Example:
-            record = client.create("user", {
-                "firstName": "John",
-                "lastName": "Doe",
-                "email": "john@example.com"
-            })
         """
         raise NotImplementedError("Write operations not supported by this driver")
 
@@ -237,7 +195,6 @@ class BaseDriver(ABC):
 
         Note:
             Agents should RARELY generate delete operations!
-            Always require explicit user approval for deletes.
         """
         raise NotImplementedError("Delete operations not supported by this driver")
 
@@ -257,14 +214,6 @@ class BaseDriver(ABC):
 
         Yields:
             Batches of records as lists of dictionaries
-
-        Example:
-            for batch in client.read_batched("user/get-users", batch_size=100):
-                process_batch(batch)  # Process 100 records at a time
-
-        Note:
-            Agent generates code with this pattern.
-            Python runtime handles iteration (not the agent!).
         """
         raise NotImplementedError("Batched reading not supported by this driver")
 
@@ -282,7 +231,7 @@ class BaseDriver(ABC):
         Call a REST API endpoint directly (low-level access).
 
         Args:
-            endpoint: API endpoint path (e.g., "/v2/user/get-users")
+            endpoint: API endpoint path
             method: HTTP method ("GET", "POST", "PUT", "DELETE")
             params: URL query parameters
             data: Request body (for POST/PUT)
@@ -290,13 +239,6 @@ class BaseDriver(ABC):
 
         Returns:
             Response data as dictionary
-
-        Example:
-            result = client.call_endpoint(
-                endpoint="/v2/user/get-users",
-                method="POST",
-                data={"limit": 50}
-            )
         """
         raise NotImplementedError("Low-level endpoint calls not supported by this driver")
 
@@ -307,41 +249,12 @@ class BaseDriver(ABC):
         Get current rate limit status (if supported by API).
 
         Returns:
-            {
-                "remaining": int,     # Requests remaining
-                "limit": int,         # Total limit
-                "reset_at": str,      # ISO timestamp when limit resets
-                "retry_after": int    # Seconds to wait (if rate limited)
-            }
-
-        Example:
-            status = client.get_rate_limit_status()
-            if status["remaining"] < 10:
-                print("Warning: Only 10 API calls left!")
+            Dictionary with rate limit information
         """
         return {"remaining": None, "limit": None, "reset_at": None, "retry_after": None}
 
     def close(self):
         """
         Close connections and cleanup resources.
-
-        Example:
-            client = Driver.from_env()
-            try:
-                results = client.read("user/get-users")
-            finally:
-                client.close()
-        """
-        pass
-
-    # Internal Methods
-
-    def _validate_connection(self):
-        """
-        Validate connection at __init__ time (fail fast!).
-
-        Raises:
-            AuthenticationError: Invalid credentials
-            ConnectionError: Cannot reach API
         """
         pass

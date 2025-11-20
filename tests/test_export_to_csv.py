@@ -10,7 +10,7 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
-from fidoo_driver import Fidoo7Driver, AuthenticationError
+from fidoo_driver import Fidoo8Driver, AuthenticationError
 
 # Load .env file
 load_dotenv()
@@ -52,6 +52,7 @@ def export_object(driver, endpoint, output_file):
 
 def main():
     api_key = os.getenv('FIDOO_API') or os.getenv('FIDOO_API_KEY')
+    base_url = os.getenv('FIDOO_BASE_URL') or os.getenv('FIDOO_API_URL')
 
     if not api_key:
         print("ERROR: Set FIDOO_API or FIDOO_API_KEY in .env file")
@@ -64,26 +65,26 @@ def main():
     print(f"Exporting Fidoo data to {output_dir}\n")
 
     try:
-        driver = Fidoo7Driver(api_key=api_key)
+        driver = Fidoo8Driver(api_key=api_key, base_url=base_url)
 
         # Export users
         export_object(
             driver,
-            "user/get-users",
+            "User",
             os.path.join(output_dir, "users.csv")
         )
 
         # Export cards
         export_object(
             driver,
-            "card/get-cards",
+            "Card",
             os.path.join(output_dir, "cards.csv")
         )
 
         # Export transactions
         export_object(
             driver,
-            "transaction/get-card-transactions",
+            "Transaction",
             os.path.join(output_dir, "transactions.csv")
         )
 

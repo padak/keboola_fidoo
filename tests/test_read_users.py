@@ -9,13 +9,14 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
-from fidoo_driver import Fidoo7Driver, AuthenticationError, ObjectNotFoundError
+from fidoo_driver import Fidoo8Driver, AuthenticationError, ObjectNotFoundError
 
 # Load .env file
 load_dotenv()
 
 def main():
     api_key = os.getenv('FIDOO_API') or os.getenv('FIDOO_API_KEY')
+    base_url = os.getenv('FIDOO_BASE_URL') or os.getenv('FIDOO_API_URL')
 
     if not api_key:
         print("ERROR: Set FIDOO_API or FIDOO_API_KEY in .env file")
@@ -24,10 +25,10 @@ def main():
     print("Fetching users from Fidoo...\n")
 
     try:
-        driver = Fidoo7Driver(api_key=api_key)
+        driver = Fidoo8Driver(api_key=api_key, base_url=base_url)
 
         # Read first 10 users
-        users = driver.read("user/get-users", limit=10)
+        users = driver.read("User", limit=10)
 
         print(f"Found {len(users)} users:\n")
 
