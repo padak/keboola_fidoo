@@ -1,0 +1,126 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fidoo-driver"
+version = "1.0.0"
+description = "Python API driver for Fidoo Expense Management platform"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [
+    {name = "Claude Code", email = "noreply@anthropic.com"}
+]
+keywords = [
+    "fidoo",
+    "expense-management",
+    "api-driver",
+    "corporate-cards",
+    "integration"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed"
+]
+
+dependencies = [
+    "requests>=2.28.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0,<8.0.0",
+    "pytest-cov>=3.0.0,<4.0.0",
+    "black>=22.0.0,<23.0.0",
+    "flake8>=4.0.0,<5.0.0",
+    "mypy>=0.950,<1.0.0",
+    "python-dotenv>=0.20.0,<1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/fidoo-driver"
+Documentation = "https://github.com/yourusername/fidoo-driver#readme"
+Repository = "https://github.com/yourusername/fidoo-driver.git"
+Issues = "https://github.com/yourusername/fidoo-driver/issues"
+
+[tool.setuptools]
+packages = ["fidoo"]
+
+[tool.setuptools.package-data]
+fidoo = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ['py37', 'py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.mypy]
+python_version = "3.7"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+filterwarnings = [
+    "error",
+    "ignore::UserWarning",
+]
+
+[tool.coverage.run]
+source = ["fidoo"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "setup.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]

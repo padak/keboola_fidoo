@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
-from fidoo_driver import Fidoo8Driver, AuthenticationError
+from fidoo_driver import FidooDriver, AuthenticationError
 
 # Load .env file
 load_dotenv()
@@ -25,7 +25,7 @@ def main():
     print(f"Connecting to Fidoo API at {base_url or 'default URL'}...")
 
     try:
-        driver = Fidoo8Driver(api_key=api_key, base_url=base_url)
+        driver = FidooDriver(api_key=api_key, base_url=base_url)
         print("Connected successfully!\n")
 
         # List available objects

@@ -1,42 +1,27 @@
 """
-Fidoo8Driver - Python API Driver for Fidoo Expense Management API
+Fidoo Expense Management API Driver
 
-Complete driver for interacting with Fidoo's comprehensive expense management platform.
+Python driver for integrating with the Fidoo expense management and corporate card platform.
 
 Installation:
-    pip install fidoo8-driver
+    pip install fidoo-driver
 
 Quick Start:
-    >>> from fidoo8 import Fidoo8Driver
-    >>> driver = Fidoo8Driver.from_env()
-    >>> users = driver.read("User", limit=50)
+    from fidoo import FidooDriver
 
-Features:
-    - User management and profiles
-    - Card management (personal and shared)
-    - Transaction tracking
-    - Expense management
-    - Travel reports and allowances
-    - Personal billing and settlements
-    - Automatic retry on rate limits
-    - Comprehensive error handling
-    - Debug mode for troubleshooting
+    client = FidooDriver.from_env()
+    users = client.read("user/get-users")
+    client.close()
 
-API Documentation:
-    https://www.fidoo.com/support/expense-management-en/it-specialist/specifications-api/
-
-Demo API:
-    https://api-demo.fidoo.com/v2/
-
-Production API:
-    https://api.fidoo.com/v2/
+API Documentation: https://www.fidoo.com/expense-management/integrace/api
 """
 
 __version__ = "1.0.0"
-__author__ = "Fidoo API Driver Generator"
+__author__ = "Claude Code"
+__license__ = "MIT"
 
-from .client import Fidoo8Driver
-from .base import BaseDriver, DriverCapabilities, PaginationStyle
+from .client import FidooDriver
+from .base import DriverCapabilities, PaginationStyle
 from .exceptions import (
     DriverError,
     AuthenticationError,
@@ -46,12 +31,11 @@ from .exceptions import (
     QuerySyntaxError,
     RateLimitError,
     ValidationError,
-    TimeoutError,
+    TimeoutError
 )
 
 __all__ = [
-    "Fidoo8Driver",
-    "BaseDriver",
+    "FidooDriver",
     "DriverCapabilities",
     "PaginationStyle",
     "DriverError",
@@ -63,4 +47,7 @@ __all__ = [
     "RateLimitError",
     "ValidationError",
     "TimeoutError",
+    "__version__",
+    "__author__",
+    "__license__",
 ]
