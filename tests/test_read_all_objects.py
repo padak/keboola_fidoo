@@ -14,16 +14,25 @@ from fidoo_driver import FidooDriver, AuthenticationError
 # Load .env file
 load_dotenv()
 
-# Endpoint mappings
+# Endpoint mappings (all objects from main.py)
 ENDPOINTS = {
     "user": "user/get-users",
     "card": "card/get-cards",
     "transaction": "transaction/get-card-transactions",
     "cash_transaction": "cash-transactions/get-cash-transactions",
+    "mvc_transaction": "mvc-transaction/get-transactions",
     "expense": "expense/get-expenses",
     "travel_report": "travel/get-travel-reports",
+    "travel_request": "travel/get-travel-requests",
+    "personal_billing": "personal-billing/get-billings",
+    "account": "accounts/get-accounts",
     "cost_center": "settings/get-cost-centers",
     "project": "settings/get-projects",
+    "account_assignment": "settings/get-account-assignments",
+    "accounting_category": "settings/get-accounting-categories",
+    "vat_breakdown": "settings/get-vat-breakdowns",
+    "vehicle": "settings/get-vehicles",
+    # "receipt" requires ID - removed from batch export
 }
 
 def main():

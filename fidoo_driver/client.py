@@ -27,6 +27,7 @@ import os
 import logging
 import time
 import requests
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Iterator
 from urllib.parse import urljoin
 from requests.adapters import HTTPAdapter
@@ -359,7 +360,8 @@ class FidooDriver(BaseDriver):
         self,
         query: str,
         limit: Optional[int] = None,
-        offset: Optional[int] = None
+        offset: Optional[int] = None,
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Execute a query and return results.
@@ -370,6 +372,7 @@ class FidooDriver(BaseDriver):
             query: Endpoint path (e.g., "user/get-users", "card/get-cards")
             limit: Maximum number of records (max: 100, default: 100)
             offset: Not used - Fidoo uses offsetToken for pagination
+            **kwargs: Additional parameters to include in request payload
 
         Returns:
             List of records
@@ -383,7 +386,7 @@ class FidooDriver(BaseDriver):
         Example:
             >>> users = client.read("user/get-users", limit=50)
             >>> cards = client.read("card/get-cards")
-            >>> transactions = client.read("transaction/get-card-transactions")
+            >>> items = client.read("expense/get-expense-items", expenseId="...")
         """
         # Validate limit
         if limit is None:
@@ -405,6 +408,16 @@ class FidooDriver(BaseDriver):
         payload = {"limit": limit}
         if offset:
             payload["offsetToken"] = offset
+
+        # Add additional parameters from kwargs
+        payload.update(kwargs)
+
+        # Add default dates for endpoints that require them
+        if "personal-billing/get-billings" in endpoint:
+            today = datetime.now()
+            two_years_ago = today - timedelta(days=730)
+            payload["fromDate"] = two_years_ago.strftime("%Y-%m-%d")
+            payload["toDate"] = today.strftime("%Y-%m-%d")
 
         try:
             response = self._api_call(endpoint, method="POST", json=payload)
@@ -447,8 +460,16 @@ class FidooDriver(BaseDriver):
         offset_token = None
         endpoint = query if query.startswith("/") else f"/{query}"
 
+        # Add default dates for endpoints that require them
+        date_payload = {}
+        if "personal-billing/get-billings" in endpoint:
+            today = datetime.now()
+            two_years_ago = today - timedelta(days=730)
+            date_payload["fromDate"] = two_years_ago.strftime("%Y-%m-%d")
+            date_payload["toDate"] = today.strftime("%Y-%m-%d")
+
         while True:
-            payload = {"limit": batch_size}
+            payload = {"limit": batch_size, **date_payload}
             if offset_token:
                 payload["offsetToken"] = offset_token
 
@@ -871,6 +892,16 @@ class FidooDriver(BaseDriver):
                     data.get("Data") or
                     data.get("Results") or
                     data.get("Records") or
+                    # Fidoo-specific plural field names (not ending in 'List')
+                    data.get("vehicles") or
+                    data.get("accounts") or
+                    data.get("projects") or
+                    data.get("list") or
+                    data.get("accountAssignments") or
+                    data.get("categories") or
+                    data.get("vatBreakDowns") or
+                    data.get("items") or
+                    data.get("trips") or
                     []
                 )
 

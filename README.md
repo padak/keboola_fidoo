@@ -1,95 +1,53 @@
-# Keboola Fidoo Integration
+# Keboola Fidoo Extractor
 
-Keboola custom component for extracting data from Fidoo expense management system.
+Data extractor for Fidoo expense management system.
 
-## Features
+## Objects
 
-- Export data from 17 Fidoo object types
-- Automatic pagination handling
-- Rate limiting with exponential backoff
-- Incremental state tracking
+| Object | Description | Nested Tables |
+|--------|-------------|---------------|
+| user | Users | - |
+| card | Payment cards | card__connectedUserIds |
+| transaction | Card transactions | - |
+| cash_transaction | Cash transactions | cash_transaction__receiptUrls |
+| mvc_transaction | MVC transactions | - |
+| expense | Expenses | expense__receiptIds, expense__receiptUrls, expense__projectIds |
+| travel_report | Travel reports | - |
+| travel_request | Travel requests | - |
+| personal_billing | Personal billing | personal_billing__user, personal_billing__closedByUser, personal_billing__summaryByCurrencyList |
+| account | Accounts | account__bankAccountNumber |
+| cost_center | Cost centers | - |
+| project | Projects | - |
+| account_assignment | Account assignments | - |
+| accounting_category | Accounting categories | - |
+| vat_breakdown | VAT breakdowns | - |
+| vehicle | Vehicles | - |
 
-## Available Objects
-
-| Object | Description |
-|--------|-------------|
-| user | User management |
-| card | Prepaid cards |
-| transaction | Card transactions |
-| cash_transaction | Cash transactions |
-| mvc_transaction | MVC transactions |
-| expense | Expenses |
-| travel_report | Travel reports |
-| travel_request | Travel requests |
-| personal_billing | Personal billing |
-| account | Accounts |
-| cost_center | Cost centers |
-| project | Projects |
-| account_assignment | Account assignments |
-| accounting_category | Accounting categories |
-| vat_breakdown | VAT breakdowns |
-| vehicle | Vehicles |
-| receipt | Receipts |
+**Automatically extracted dependent objects:**
+- expense_item (expense line items)
+- travel_report_detail (travel report details) + parts
+- travel_request_detail (travel request details) + parts
 
 ## Configuration
-
-### Required Parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `#FIDOO_API_KEY` | Fidoo API key (encrypted) |
-
-### Optional Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `objects` | `["user", "card", "transaction", "expense"]` | List of objects to export |
-| `output_bucket` | `out.c-fidoo` | Destination bucket in Keboola Storage |
-| `api_url` | `https://api.fidoo.com/v2/` | API URL (use demo URL for testing) |
-
-### Example Configuration
 
 ```json
 {
   "parameters": {
-    "#FIDOO_API_KEY": "your-api-key-here",
-    "objects": ["user", "card", "transaction", "expense", "travel_report"],
-    "output_bucket": "out.c-fidoo"
+    "#FIDOO_API_KEY": "your-api-key",
+    "objects": ["user", "card", "transaction", "expense"],
+    "output_bucket": "out.c-fidoo",
+    "include_dependent": true,
+    "api_url": "https://api.fidoo.com/v2/"
   }
 }
 ```
 
-## Output
-
-Each object type is exported to a separate table:
-- `out.c-fidoo.user`
-- `out.c-fidoo.card`
-- `out.c-fidoo.transaction`
-- etc.
-
-Nested JSON fields are automatically flattened to JSON strings.
-
-## Development
-
-### Installation
+## Local Run
 
 ```bash
-pip install -r requirements.txt
+uv pip install -r requirements.txt
+KBC_DATADIR=./data python main.py
 ```
-
-### Local Testing
-
-```bash
-# Set environment variables
-export FIDOO_API_KEY=your-api-key
-
-# Run component
-python main.py
-```
-
-## API Rate Limits
-
-Fidoo API has a limit of 6,000 requests per day per customer. The driver automatically handles rate limiting with exponential backoff.
 
 ## License
 

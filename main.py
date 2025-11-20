@@ -36,7 +36,11 @@ State file tracks:
 import logging
 import csv
 import json
+import os
 from datetime import datetime
+
+import duckdb
+import pandas as pd
 
 try:
     from keboola.component import CommonInterface
@@ -62,17 +66,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Endpoint mapping for each object type
-OBJECT_ENDPOINTS = {
+# Primary endpoints - can be batch-read directly
+PRIMARY_ENDPOINTS = {
     "user": "user/get-users",
     "card": "card/get-cards",
     "transaction": "transaction/get-card-transactions",
     "cash_transaction": "cash-transactions/get-cash-transactions",
-    "mvc_transaction": "transaction/get-mvc-transactions",
+    "mvc_transaction": "mvc-transaction/get-transactions",
     "expense": "expense/get-expenses",
     "travel_report": "travel/get-travel-reports",
     "travel_request": "travel/get-travel-requests",
-    "personal_billing": "billing/get-personal-billings",
+    "personal_billing": "personal-billing/get-billings",
     "account": "accounts/get-accounts",
     "cost_center": "settings/get-cost-centers",
     "project": "settings/get-projects",
@@ -80,8 +84,32 @@ OBJECT_ENDPOINTS = {
     "accounting_category": "settings/get-accounting-categories",
     "vat_breakdown": "settings/get-vat-breakdowns",
     "vehicle": "settings/get-vehicles",
-    "receipt": "receipt/get-receipts",
 }
+
+# Dependent endpoints - require IDs from primary objects
+DEPENDENT_ENDPOINTS = {
+    "expense_item": {
+        "endpoint": "expense/get-expense-items",
+        "source_table": "expense",
+        "source_id_field": "expenseId",
+        "param_name": "expenseId",
+    },
+    "travel_report_detail": {
+        "endpoint": "travel/get-travel-report-detail",
+        "source_table": "travel_report",
+        "source_id_field": "travelReportId",
+        "param_name": "travelReportId",
+    },
+    "travel_request_detail": {
+        "endpoint": "travel/get-travel-request-detail",
+        "source_table": "travel_request",
+        "source_id_field": "travelRequestId",
+        "param_name": "travelRequestId",
+    },
+}
+
+# Combined for backward compatibility
+OBJECT_ENDPOINTS = {**PRIMARY_ENDPOINTS}
 
 
 def flatten_json(obj):
@@ -93,32 +121,161 @@ def flatten_json(obj):
     return str(obj) if obj is not None else ""
 
 
-def export_fidoo_object(ci, driver, object_type, output_bucket):
+def flatten_record(record):
+    """Flatten a single record, converting nested objects to JSON strings"""
+    flat = {}
+    for key, value in record.items():
+        if isinstance(value, (dict, list)):
+            flat[key] = json.dumps(value)
+        else:
+            flat[key] = value
+    return flat
+
+
+def detect_primary_key(records, table_name):
+    """Detect the primary key field for a table"""
+    if not records:
+        return None
+
+    # Common primary key patterns
+    candidates = [
+        f"{table_name}Id",  # expenseId, userId
+        f"{table_name.rstrip('s')}Id",  # expenses -> expenseId
+        "id",
+        "Id",
+    ]
+
+    first_record = records[0]
+    for candidate in candidates:
+        if candidate in first_record:
+            return candidate
+
+    # Fallback: first field ending with 'Id'
+    for key in first_record.keys():
+        if key.endswith('Id'):
+            return key
+
+    return None
+
+
+def extract_nested(records, table_name, primary_key=None):
     """
-    Export a single object type from Fidoo and write to Keboola output table
+    Extract nested objects/arrays into separate normalized tables.
 
     Args:
-        ci: CommonInterface instance
-        driver: Fidoo7Driver instance
-        object_type: Type of object to export (e.g., "user", "card")
-        output_bucket: Destination bucket in Keboola Storage
+        records: List of records (dicts)
+        table_name: Name of the main table
+        primary_key: Primary key field name (auto-detected if None)
 
     Returns:
-        Number of records exported
+        Tuple of (main_records, nested_tables_dict)
+        nested_tables_dict: {table_name: [records]}
     """
-    if object_type not in OBJECT_ENDPOINTS:
-        logger.error(f"Unknown object type: {object_type}")
-        raise ValueError(f"Unknown object type: {object_type}. Available: {list(OBJECT_ENDPOINTS.keys())}")
+    if not records:
+        return [], {}
 
-    endpoint = OBJECT_ENDPOINTS[object_type]
+    # Auto-detect primary key if not provided
+    if primary_key is None:
+        primary_key = detect_primary_key(records, table_name)
+
+    main_records = []
+    nested_tables = {}  # {field_name: [records]}
+
+    for record in records:
+        main = {}
+        pk_value = record.get(primary_key) if primary_key else None
+
+        for key, value in record.items():
+            if isinstance(value, dict) and value:
+                # Nested object → separate table
+                nested_name = f"{table_name}__{key}"
+                if nested_name not in nested_tables:
+                    nested_tables[nested_name] = []
+
+                nested_record = {"_parent_id": pk_value, **value}
+                nested_tables[nested_name].append(nested_record)
+
+            elif isinstance(value, list) and value:
+                # Check if it's a list of objects or primitives
+                if isinstance(value[0], dict):
+                    # Array of objects → separate table
+                    nested_name = f"{table_name}__{key}"
+                    if nested_name not in nested_tables:
+                        nested_tables[nested_name] = []
+
+                    for i, item in enumerate(value):
+                        nested_record = {"_parent_id": pk_value, "_index": i, **item}
+                        nested_tables[nested_name].append(nested_record)
+                else:
+                    # Array of primitives → separate table with value column
+                    nested_name = f"{table_name}__{key}"
+                    if nested_name not in nested_tables:
+                        nested_tables[nested_name] = []
+
+                    for i, item in enumerate(value):
+                        nested_record = {"_parent_id": pk_value, "_index": i, "value": item}
+                        nested_tables[nested_name].append(nested_record)
+            else:
+                # Regular field or empty list/dict
+                if isinstance(value, (dict, list)):
+                    main[key] = json.dumps(value) if value else None
+                else:
+                    main[key] = value
+
+        main_records.append(main)
+
+    # Recursively extract nested from nested tables
+    all_nested = {}
+    for nested_name, nested_records in nested_tables.items():
+        # Extract any further nesting
+        flat_nested, deeper_nested = extract_nested(nested_records, nested_name, "_parent_id")
+        all_nested[nested_name] = flat_nested
+        all_nested.update(deeper_nested)
+
+    return main_records, all_nested
+
+
+def insert_to_duckdb(conn, table_name, records):
+    """Insert records into DuckDB table, creating it if needed."""
+    if not records:
+        return
+
+    df = pd.DataFrame(records)
+
+    # Check if table exists
+    tables = [t[0] for t in conn.execute("SHOW TABLES").fetchall()]
+
+    if table_name not in tables:
+        conn.execute(f"CREATE TABLE \"{table_name}\" AS SELECT * FROM df")
+    else:
+        conn.execute(f"INSERT INTO \"{table_name}\" SELECT * FROM df")
+
+
+def export_primary_to_duckdb(conn, driver, object_type, endpoint):
+    """
+    Export a primary object type from Fidoo directly to DuckDB.
+    Automatically normalizes nested objects into separate tables.
+
+    Args:
+        conn: DuckDB connection
+        driver: FidooDriver instance
+        object_type: Type of object (table name)
+        endpoint: API endpoint path
+
+    Returns:
+        Number of records exported (main table only)
+    """
     logger.info(f"Exporting {object_type} from endpoint: {endpoint}")
 
-    # Fetch all records using batched reading
+    # Collect all records first for proper normalization
     all_records = []
     try:
         for batch in driver.read_batched(endpoint, batch_size=100):
+            if not batch:
+                continue
             all_records.extend(batch)
             logger.info(f"  Fetched batch: {len(batch)} records (total: {len(all_records)})")
+
     except ObjectNotFoundError as e:
         logger.warning(f"Object {object_type} not found or empty: {e.message}")
         return 0
@@ -133,50 +290,164 @@ def export_fidoo_object(ci, driver, object_type, output_bucket):
         logger.warning(f"No records found for {object_type}")
         return 0
 
-    logger.info(f"Total {object_type} records: {len(all_records)}")
+    # Extract nested objects into separate tables
+    main_records, nested_tables = extract_nested(all_records, object_type)
 
-    # Determine columns from first record
-    if all_records:
-        columns = list(all_records[0].keys())
-    else:
-        columns = []
+    # Drop existing tables
+    conn.execute(f"DROP TABLE IF EXISTS \"{object_type}\"")
+    for nested_name in nested_tables.keys():
+        conn.execute(f"DROP TABLE IF EXISTS \"{nested_name}\"")
 
-    # Create output table definition
-    table_name = f"{object_type}.csv"
-    destination = f"{output_bucket}.{object_type}"
+    # Insert main table
+    insert_to_duckdb(conn, object_type, main_records)
+    logger.info(f"Total {object_type} records: {len(main_records)}")
 
-    out_table = ci.create_out_table_definition(
-        name=table_name,
-        destination=destination,
-        incremental=False,
-        has_header=True,
-    )
+    # Insert nested tables
+    for nested_name, nested_records in nested_tables.items():
+        if nested_records:
+            insert_to_duckdb(conn, nested_name, nested_records)
+            logger.info(f"  → {nested_name}: {len(nested_records)} records")
 
-    logger.info(f"Writing {len(all_records)} records to {out_table.full_path}")
+    return len(main_records)
 
-    # Write records to CSV
-    with open(out_table.full_path, 'w+', newline='', encoding='utf-8') as f:
-        if columns:
-            writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
-            writer.writeheader()
 
-            for record in all_records:
-                # Flatten any nested objects
-                flat_record = {}
-                for key, value in record.items():
-                    if isinstance(value, (dict, list)):
-                        flat_record[key] = flatten_json(value)
-                    else:
-                        flat_record[key] = value if value is not None else ""
-                writer.writerow(flat_record)
+def export_dependent_to_duckdb(conn, driver, object_type, config):
+    """
+    Export a dependent object type that requires IDs from a primary table.
 
-    logger.info(f"Wrote {len(all_records)} {object_type} records to CSV")
+    Args:
+        conn: DuckDB connection
+        driver: FidooDriver instance
+        object_type: Type of object (table name)
+        config: Configuration dict with endpoint, source_table, source_id_field, param_name
 
-    # Write manifest
-    ci.write_manifest(out_table)
-    logger.info(f"Manifest written to {out_table.full_path}.manifest")
+    Returns:
+        Number of records exported
+    """
+    endpoint = config["endpoint"]
+    source_table = config["source_table"]
+    source_id_field = config["source_id_field"]
+    param_name = config["param_name"]
 
-    return len(all_records)
+    # Check if source table exists
+    tables = conn.execute("SHOW TABLES").fetchall()
+    table_names = [t[0] for t in tables]
+
+    if source_table not in table_names:
+        logger.warning(f"Source table {source_table} not found, skipping {object_type}")
+        return 0
+
+    # Get unique IDs from source table
+    try:
+        ids = conn.execute(f"SELECT DISTINCT {source_id_field} FROM {source_table} WHERE {source_id_field} IS NOT NULL").fetchall()
+        ids = [row[0] for row in ids]
+    except Exception as e:
+        logger.warning(f"Could not get IDs from {source_table}.{source_id_field}: {e}")
+        return 0
+
+    if not ids:
+        logger.warning(f"No IDs found in {source_table}.{source_id_field}, skipping {object_type}")
+        return 0
+
+    logger.info(f"Exporting {object_type} for {len(ids)} {source_id_field}s")
+
+    # Collect all records first for proper normalization
+    all_records = []
+
+    for i, id_value in enumerate(ids):
+        try:
+            # Call endpoint with the ID parameter
+            records = driver.read(endpoint, limit=100, **{param_name: id_value})
+
+            if not records:
+                continue
+
+            # Add source ID to each record for reference
+            for record in records:
+                record[f"_source_{source_id_field}"] = id_value
+
+            all_records.extend(records)
+
+            if (i + 1) % 10 == 0:
+                logger.info(f"  Processed {i + 1}/{len(ids)} IDs (total records: {len(all_records)})")
+
+        except Exception as e:
+            logger.warning(f"Error fetching {object_type} for {id_value}: {e}")
+            continue
+
+    if not all_records:
+        logger.info(f"Total {object_type} records: 0")
+        return 0
+
+    # Extract nested objects into separate tables
+    main_records, nested_tables = extract_nested(all_records, object_type)
+
+    # Drop existing tables
+    conn.execute(f"DROP TABLE IF EXISTS \"{object_type}\"")
+    for nested_name in nested_tables.keys():
+        conn.execute(f"DROP TABLE IF EXISTS \"{nested_name}\"")
+
+    # Insert main table
+    insert_to_duckdb(conn, object_type, main_records)
+    logger.info(f"Total {object_type} records: {len(main_records)}")
+
+    # Insert nested tables
+    for nested_name, nested_records in nested_tables.items():
+        if nested_records:
+            insert_to_duckdb(conn, nested_name, nested_records)
+            logger.info(f"  → {nested_name}: {len(nested_records)} records")
+
+    return len(main_records)
+
+
+def export_duckdb_to_csv(conn, ci, output_bucket):
+    """
+    Export all tables from DuckDB to CSV files for Keboola.
+
+    Args:
+        conn: DuckDB connection
+        ci: CommonInterface instance
+        output_bucket: Destination bucket in Keboola Storage
+
+    Returns:
+        Dict of table_name -> record_count
+    """
+    tables = conn.execute("SHOW TABLES").fetchall()
+    table_names = [t[0] for t in tables]
+
+    export_counts = {}
+
+    for table_name in table_names:
+        # Get record count
+        count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+
+        if count == 0:
+            logger.info(f"Skipping empty table: {table_name}")
+            export_counts[table_name] = 0
+            continue
+
+        # Create output table definition
+        csv_name = f"{table_name}.csv"
+        destination = f"{output_bucket}.{table_name}"
+
+        out_table = ci.create_out_table_definition(
+            name=csv_name,
+            destination=destination,
+            incremental=False,
+            has_header=True,
+        )
+
+        # Export to CSV using DuckDB
+        conn.execute(f"COPY {table_name} TO '{out_table.full_path}' (HEADER, DELIMITER ',')")
+
+        logger.info(f"Exported {count} records from {table_name} to {out_table.full_path}")
+
+        # Write manifest
+        ci.write_manifest(out_table)
+
+        export_counts[table_name] = count
+
+    return export_counts
 
 
 def update_state(ci, object_counts):
@@ -216,9 +487,13 @@ def main():
         # Optional: API URL (for demo environment)
         api_url = parameters.get('api_url', None)
 
+        # Include dependent objects (expense_item, travel_report_detail, travel_request_detail)
+        include_dependent = parameters.get('include_dependent', True)
+
         logger.info(f"Configuration loaded:")
         logger.info(f"  - Objects: {objects}")
         logger.info(f"  - Output bucket: {output_bucket}")
+        logger.info(f"  - Include dependent: {include_dependent}")
         if api_url:
             logger.info(f"  - API URL: {api_url}")
 
@@ -238,30 +513,77 @@ def main():
             logger.error(f"Failed to initialize driver: {e}")
             raise
 
-        # Export each object type
+        # Create DuckDB connection (in-memory or file-based)
+        data_dir = ci.tables_out_path if hasattr(ci, 'tables_out_path') else '/tmp'
+        duckdb_path = os.path.join(data_dir, 'fidoo_working.duckdb')
+        conn = duckdb.connect(duckdb_path)
+        logger.info(f"DuckDB initialized: {duckdb_path}")
+
         object_counts = {}
         total_records = 0
 
         try:
+            # Phase 1: Export primary objects to DuckDB
+            logger.info(f"\n{'='*50}")
+            logger.info("PHASE 1: Exporting primary objects")
+            logger.info(f"{'='*50}")
+
             for object_type in objects:
-                logger.info(f"\n{'='*50}")
-                logger.info(f"Exporting: {object_type}")
-                logger.info(f"{'='*50}")
+                if object_type not in PRIMARY_ENDPOINTS:
+                    logger.warning(f"Unknown object type: {object_type}, skipping")
+                    continue
+
+                endpoint = PRIMARY_ENDPOINTS[object_type]
+                logger.info(f"\n--- {object_type} ---")
 
                 try:
-                    count = export_fidoo_object(ci, driver, object_type, output_bucket)
+                    count = export_primary_to_duckdb(conn, driver, object_type, endpoint)
                     object_counts[object_type] = count
                     total_records += count
-                    logger.info(f"Exported {count} {object_type} records")
 
                 except Exception as e:
                     logger.error(f"Failed to export {object_type}: {e}")
                     object_counts[object_type] = 0
-                    # Continue with other objects
+
+            # Phase 2: Export dependent objects
+            if include_dependent:
+                logger.info(f"\n{'='*50}")
+                logger.info("PHASE 2: Exporting dependent objects")
+                logger.info(f"{'='*50}")
+
+                for object_type, config in DEPENDENT_ENDPOINTS.items():
+                    # Only export if source table was requested
+                    if config["source_table"] not in objects:
+                        logger.info(f"Skipping {object_type} (source {config['source_table']} not in export list)")
+                        continue
+
+                    logger.info(f"\n--- {object_type} ---")
+
+                    try:
+                        count = export_dependent_to_duckdb(conn, driver, object_type, config)
+                        object_counts[object_type] = count
+                        total_records += count
+
+                    except Exception as e:
+                        logger.error(f"Failed to export {object_type}: {e}")
+                        object_counts[object_type] = 0
+
+            # Phase 3: Export from DuckDB to CSV
+            logger.info(f"\n{'='*50}")
+            logger.info("PHASE 3: Exporting to CSV")
+            logger.info(f"{'='*50}")
+
+            export_counts = export_duckdb_to_csv(conn, ci, output_bucket)
 
         finally:
+            conn.close()
             driver.close()
-            logger.info("Driver connection closed")
+            logger.info("Connections closed")
+
+            # Clean up DuckDB file
+            if os.path.exists(duckdb_path):
+                os.remove(duckdb_path)
+                logger.info(f"Cleaned up {duckdb_path}")
 
         # Update state
         update_state(ci, object_counts)
