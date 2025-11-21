@@ -29,8 +29,14 @@ __pycache__/
 *$py.class
 .Python
 venv/
+.venv/
 env/
 *.egg-info/
+
+# uv
+# uv.lock is typically committed for applications (not libraries)
+# Uncomment the next line if you're building a library
+# uv.lock
 
 # Keboola specific
 data/

@@ -23,10 +23,10 @@ Data extractor for Fidoo expense management system.
 | vat_breakdown | VAT breakdowns | - |
 | vehicle | Vehicles | - |
 
-**Automatically extracted dependent objects:**
-- expense_item (expense line items)
-- travel_report_detail (travel report details) + parts
-- travel_request_detail (travel request details) + parts
+**Automatically extracted dependent objects** (when `include_dependent: true`):
+- expense_item → requires `expense` in objects list
+- travel_report_detail + parts → requires `travel_report` in objects list
+- travel_request_detail + parts → requires `travel_request` in objects list
 
 ## Configuration
 
@@ -60,9 +60,44 @@ Data extractor for Fidoo expense management system.
 
 ## Local Run
 
+### Installation
+
 ```bash
-uv pip install -r requirements.txt
-KBC_DATADIR=./data python main.py
+# Install uv if you haven't already
+# macOS/Linux:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows:
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+### Setup and Run
+
+```bash
+# Install dependencies using uv
+uv sync
+
+# Run the application
+uv run python main.py
+
+# Or with the KBC_DATADIR environment variable
+KBC_DATADIR=./data uv run python main.py
+```
+
+### Development
+
+```bash
+# Install development dependencies
+uv sync --all-extras
+
+# Run tests
+uv run pytest
+
+# Format code
+uv run black .
+
+# Lint code
+uv run ruff check .
 ```
 
 ## License

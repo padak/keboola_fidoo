@@ -37,10 +37,90 @@ import logging
 import csv
 import json
 import os
+import time
 from datetime import datetime
 
 import duckdb
 import pandas as pd
+
+
+# Time profiler for tracking execution times
+class TimeProfiler:
+    def __init__(self):
+        self.start_time = time.time()
+        self.api_calls = {}  # {endpoint: {"time": float, "records": int}}
+        self.dependent_calls = {}  # {endpoint: {"time": float, "calls": int, "records": int}}
+        self.processing = {
+            "duckdb_inserts": 0.0,
+            "csv_export": 0.0,
+            "nested_extraction": 0.0,
+        }
+
+    def format_duration(self, seconds):
+        """Format seconds into human-readable string"""
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes = int(seconds // 60)
+        secs = seconds % 60
+        if minutes < 60:
+            return f"{minutes}m {secs:.0f}s"
+        hours = int(minutes // 60)
+        mins = minutes % 60
+        return f"{hours}h {mins}m {secs:.0f}s"
+
+    def print_summary(self):
+        """Print the time profile summary"""
+        total_time = time.time() - self.start_time
+
+        # Calculate totals
+        api_total = sum(v["time"] for v in self.api_calls.values())
+        dependent_total = sum(v["time"] for v in self.dependent_calls.values())
+        processing_total = sum(self.processing.values())
+
+        lines = [
+            "",
+            "=" * 50,
+            "TIME PROFILE",
+            "=" * 50,
+            f"Total runtime: {self.format_duration(total_time)}",
+            "",
+            "API Calls (Primary Endpoints):",
+        ]
+
+        # Sort by time descending
+        for name, data in sorted(self.api_calls.items(), key=lambda x: -x[1]["time"]):
+            lines.append(f"  {name:30} {self.format_duration(data['time']):>8} ({data['records']} records)")
+
+        if self.dependent_calls:
+            lines.append("")
+            lines.append("Dependent Endpoints (iterate over parent IDs):")
+            for name, data in sorted(self.dependent_calls.items(), key=lambda x: -x[1]["time"]):
+                lines.append(f"  {name:30} {self.format_duration(data['time']):>8} ({data['calls']} calls, {data['records']} records)")
+
+        lines.extend([
+            "",
+            "Processing:",
+            f"  {'DuckDB inserts':30} {self.format_duration(self.processing['duckdb_inserts']):>8}",
+            f"  {'CSV export':30} {self.format_duration(self.processing['csv_export']):>8}",
+            f"  {'Nested extraction':30} {self.format_duration(self.processing['nested_extraction']):>8}",
+            "",
+            "Summary:",
+        ])
+
+        all_api_time = api_total + dependent_total
+        if total_time > 0:
+            api_pct = (all_api_time / total_time) * 100
+            proc_pct = (processing_total / total_time) * 100
+            lines.append(f"  API calls total:       {self.format_duration(all_api_time):>8} ({api_pct:.0f}%)")
+            lines.append(f"  Processing total:      {self.format_duration(processing_total):>8} ({proc_pct:.0f}%)")
+
+        lines.append("=" * 50)
+
+        return "\n".join(lines)
+
+
+# Global profiler instance
+profiler = TimeProfiler()
 
 try:
     from keboola.component import CommonInterface
@@ -192,7 +272,7 @@ def extract_nested(records, table_name, primary_key=None):
                 if nested_name not in nested_tables:
                     nested_tables[nested_name] = []
 
-                nested_record = {"_parent_id": pk_value, **value}
+                nested_record = {"parent_id": pk_value, **value}
                 nested_tables[nested_name].append(nested_record)
 
             elif isinstance(value, list) and value:
@@ -204,7 +284,7 @@ def extract_nested(records, table_name, primary_key=None):
                         nested_tables[nested_name] = []
 
                     for i, item in enumerate(value):
-                        nested_record = {"_parent_id": pk_value, "_index": i, **item}
+                        nested_record = {"parent_id": pk_value, "_index": i, **item}
                         nested_tables[nested_name].append(nested_record)
                 else:
                     # Array of primitives → separate table with value column
@@ -213,7 +293,7 @@ def extract_nested(records, table_name, primary_key=None):
                         nested_tables[nested_name] = []
 
                     for i, item in enumerate(value):
-                        nested_record = {"_parent_id": pk_value, "_index": i, "value": item}
+                        nested_record = {"parent_id": pk_value, "_index": i, "value": item}
                         nested_tables[nested_name].append(nested_record)
             else:
                 # Regular field or empty list/dict
@@ -228,7 +308,7 @@ def extract_nested(records, table_name, primary_key=None):
     all_nested = {}
     for nested_name, nested_records in nested_tables.items():
         # Extract any further nesting
-        flat_nested, deeper_nested = extract_nested(nested_records, nested_name, "_parent_id")
+        flat_nested, deeper_nested = extract_nested(nested_records, nested_name, "parent_id")
         all_nested[nested_name] = flat_nested
         all_nested.update(deeper_nested)
 
@@ -240,6 +320,7 @@ def insert_to_duckdb(conn, table_name, records):
     if not records:
         return
 
+    start = time.time()
     df = pd.DataFrame(records)
 
     # Check if table exists
@@ -249,6 +330,8 @@ def insert_to_duckdb(conn, table_name, records):
         conn.execute(f"CREATE TABLE \"{table_name}\" AS SELECT * FROM df")
     else:
         conn.execute(f"INSERT INTO \"{table_name}\" SELECT * FROM df")
+
+    profiler.processing["duckdb_inserts"] += time.time() - start
 
 
 def export_primary_to_duckdb(conn, driver, object_type, endpoint):
@@ -269,6 +352,7 @@ def export_primary_to_duckdb(conn, driver, object_type, endpoint):
 
     # Collect all records first for proper normalization
     all_records = []
+    api_start = time.time()
     try:
         for batch in driver.read_batched(endpoint, batch_size=100):
             if not batch:
@@ -278,6 +362,7 @@ def export_primary_to_duckdb(conn, driver, object_type, endpoint):
 
     except ObjectNotFoundError as e:
         logger.warning(f"Object {object_type} not found or empty: {e.message}")
+        profiler.api_calls[object_type] = {"time": time.time() - api_start, "records": 0}
         return 0
     except RateLimitError as e:
         logger.error(f"Rate limit exceeded: {e.message}")
@@ -286,12 +371,17 @@ def export_primary_to_duckdb(conn, driver, object_type, endpoint):
         logger.error(f"Request timed out: {e.message}")
         raise
 
+    api_time = time.time() - api_start
+    profiler.api_calls[object_type] = {"time": api_time, "records": len(all_records)}
+
     if not all_records:
         logger.warning(f"No records found for {object_type}")
         return 0
 
     # Extract nested objects into separate tables
+    nested_start = time.time()
     main_records, nested_tables = extract_nested(all_records, object_type)
+    profiler.processing["nested_extraction"] += time.time() - nested_start
 
     # Drop existing tables
     conn.execute(f"DROP TABLE IF EXISTS \"{object_type}\"")
@@ -353,11 +443,14 @@ def export_dependent_to_duckdb(conn, driver, object_type, config):
 
     # Collect all records first for proper normalization
     all_records = []
+    api_start = time.time()
+    call_count = 0
 
     for i, id_value in enumerate(ids):
         try:
             # Call endpoint with the ID parameter
             records = driver.read(endpoint, limit=100, **{param_name: id_value})
+            call_count += 1
 
             if not records:
                 continue
@@ -375,12 +468,17 @@ def export_dependent_to_duckdb(conn, driver, object_type, config):
             logger.warning(f"Error fetching {object_type} for {id_value}: {e}")
             continue
 
+    api_time = time.time() - api_start
+    profiler.dependent_calls[object_type] = {"time": api_time, "calls": call_count, "records": len(all_records)}
+
     if not all_records:
         logger.info(f"Total {object_type} records: 0")
         return 0
 
     # Extract nested objects into separate tables
+    nested_start = time.time()
     main_records, nested_tables = extract_nested(all_records, object_type)
+    profiler.processing["nested_extraction"] += time.time() - nested_start
 
     # Drop existing tables
     conn.execute(f"DROP TABLE IF EXISTS \"{object_type}\"")
@@ -411,11 +509,11 @@ def get_primary_key_for_table(conn, table_name):
     columns = conn.execute(f"DESCRIBE \"{table_name}\"").fetchall()
     column_names = [col[0] for col in columns]
 
-    # Nested tables use _parent_id + _index as composite key
+    # Nested tables use parent_id + _index as composite key
     if "__" in table_name:
         pk = []
-        if "_parent_id" in column_names:
-            pk.append("_parent_id")
+        if "parent_id" in column_names:
+            pk.append("parent_id")
         if "_index" in column_names:
             pk.append("_index")
         return pk if pk else None
@@ -485,7 +583,9 @@ def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True):
         )
 
         # Export to CSV using DuckDB
+        csv_start = time.time()
         conn.execute(f"COPY \"{table_name}\" TO '{out_table.full_path}' (HEADER, DELIMITER ',')")
+        profiler.processing["csv_export"] += time.time() - csv_start
 
         pk_info = f" [PK: {', '.join(primary_key)}]" if primary_key else ""
         logger.info(f"Exported {count} records from {table_name}{pk_info}")
@@ -510,6 +610,9 @@ def update_state(ci, object_counts):
 
 def main():
     """Main entry point for Keboola component"""
+    global profiler
+    profiler = TimeProfiler()  # Reset profiler for this run
+
     try:
         # Initialize Keboola Common Interface
         ci = CommonInterface()
@@ -647,6 +750,10 @@ def main():
         for obj, count in object_counts.items():
             logger.info(f"  {obj}: {count} records")
         logger.info(f"  TOTAL: {total_records} records")
+
+        # Time profile
+        logger.info(profiler.print_summary())
+
         logger.info("Component execution completed successfully")
 
         return 0
