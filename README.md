@@ -38,7 +38,8 @@ Data extractor for Fidoo expense management system.
     "output_bucket": "out.c-fidoo",
     "objects": ["user", "card", "transaction", "expense"],
     "include_dependent": true,
-    "set_primary_keys": true
+    "set_primary_keys": true,
+    "auto_incremental": false
   }
 }
 ```
@@ -51,6 +52,21 @@ Data extractor for Fidoo expense management system.
 | `objects` | basic set | List of objects to extract |
 | `include_dependent` | true | Extract dependent objects (expense_item, etc.) |
 | `set_primary_keys` | true | Auto-detect and set primary keys |
+| `auto_incremental` | false | Enable incremental loading using last_run from state |
+
+## Incremental Loading
+
+When `auto_incremental: true`, the extractor uses the `last_run` timestamp from Keboola state to fetch only new records since the last successful run.
+
+**Supported objects for incremental loading:**
+- transaction, cash_transaction, mvc_transaction
+- expense, travel_report, travel_request
+
+**Always full load:**
+- user, card, account, personal_billing
+- All settings objects (cost_center, project, vehicle, etc.)
+
+Incremental objects are exported with `incremental: true` in their manifest, so Keboola Storage appends new records instead of replacing the table.
 
 ## Output
 

@@ -8,6 +8,9 @@ Configuration:
 - FIDOO_API_KEY: Fidoo API key (encrypted)
 - objects: List of objects to export (e.g., ["user", "card", "transaction", "expense"])
 - output_bucket: Destination bucket in Keboola Storage (default: out.c-fidoo)
+- auto_incremental: Enable incremental loading using last_run from state (default: false)
+- include_dependent: Include dependent objects like expense_item (default: true)
+- set_primary_keys: Auto-detect and set primary keys in manifests (default: true)
 
 Available objects:
 - user: User management
@@ -191,6 +194,18 @@ DEPENDENT_ENDPOINTS = {
 # Combined for backward compatibility
 OBJECT_ENDPOINTS = {**PRIMARY_ENDPOINTS}
 
+# Endpoints that support incremental loading (time-based filtering)
+# Maps object_type -> (from_param_name, to_param_name)
+INCREMENTAL_ENDPOINTS = {
+    "transaction": ("from", "to"),
+    "cash_transaction": ("from", "to"),
+    "mvc_transaction": ("from", "to"),
+    "expense": ("from", "to"),
+    "travel_report": ("from", "to"),
+    "travel_request": ("from", "to"),
+    # Note: personal_billing uses fromDate/toDate but only for full range, not incremental
+}
+
 
 def flatten_json(obj):
     """Flatten nested JSON objects to string representation"""
@@ -334,7 +349,7 @@ def insert_to_duckdb(conn, table_name, records):
     profiler.processing["duckdb_inserts"] += time.time() - start
 
 
-def export_primary_to_duckdb(conn, driver, object_type, endpoint):
+def export_primary_to_duckdb(conn, driver, object_type, endpoint, from_date=None, to_date=None):
     """
     Export a primary object type from Fidoo directly to DuckDB.
     Automatically normalizes nested objects into separate tables.
@@ -344,17 +359,32 @@ def export_primary_to_duckdb(conn, driver, object_type, endpoint):
         driver: FidooDriver instance
         object_type: Type of object (table name)
         endpoint: API endpoint path
+        from_date: Optional start date for incremental loading (ISO format)
+        to_date: Optional end date for incremental loading (ISO format)
 
     Returns:
         Number of records exported (main table only)
     """
     logger.info(f"Exporting {object_type} from endpoint: {endpoint}")
 
+    # Build API parameters for incremental loading
+    api_params = {}
+    if from_date and object_type in INCREMENTAL_ENDPOINTS:
+        from_param, to_param = INCREMENTAL_ENDPOINTS[object_type]
+        api_params[from_param] = from_date
+        # Always set to_date to avoid API errors
+        if to_date:
+            api_params[to_param] = to_date
+        else:
+            # Default to now if not provided
+            api_params[to_param] = datetime.now().isoformat() + "+00:00"
+        logger.info(f"  Incremental load: {from_param}={from_date}")
+
     # Collect all records first for proper normalization
     all_records = []
     api_start = time.time()
     try:
-        for batch in driver.read_batched(endpoint, batch_size=100):
+        for batch in driver.read_batched(endpoint, batch_size=100, **api_params):
             if not batch:
                 continue
             all_records.extend(batch)
@@ -540,7 +570,7 @@ def get_primary_key_for_table(conn, table_name):
     return None
 
 
-def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True):
+def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True, incremental_objects=None):
     """
     Export all tables from DuckDB to CSV files for Keboola.
 
@@ -549,12 +579,16 @@ def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True):
         ci: CommonInterface instance
         output_bucket: Destination bucket in Keboola Storage
         set_primary_keys: Whether to set primary keys in manifests
+        incremental_objects: Set of object names that should use incremental loading
 
     Returns:
         Dict of table_name -> record_count
     """
     tables = conn.execute("SHOW TABLES").fetchall()
     table_names = [t[0] for t in tables]
+
+    if incremental_objects is None:
+        incremental_objects = set()
 
     export_counts = {}
 
@@ -570,6 +604,11 @@ def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True):
         # Detect primary key
         primary_key = get_primary_key_for_table(conn, table_name) if set_primary_keys else None
 
+        # Determine if this table should be incremental
+        # Check base table name (for nested tables like expense__items, check "expense")
+        base_table = table_name.split("__")[0]
+        is_incremental = base_table in incremental_objects
+
         # Create output table definition
         csv_name = f"{table_name}.csv"
         destination = f"{output_bucket}.{table_name}"
@@ -578,7 +617,7 @@ def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True):
             name=csv_name,
             destination=destination,
             primary_key=primary_key,
-            incremental=False,
+            incremental=is_incremental,
             has_header=True,
         )
 
@@ -588,7 +627,8 @@ def export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys=True):
         profiler.processing["csv_export"] += time.time() - csv_start
 
         pk_info = f" [PK: {', '.join(primary_key)}]" if primary_key else ""
-        logger.info(f"Exported {count} records from {table_name}{pk_info}")
+        inc_info = " [incremental]" if is_incremental else ""
+        logger.info(f"Exported {count} records from {table_name}{pk_info}{inc_info}")
 
         # Write manifest
         ci.write_manifest(out_table)
@@ -644,13 +684,36 @@ def main():
         # Set primary keys in manifests
         set_primary_keys = parameters.get('set_primary_keys', True)
 
+        # Auto incremental loading - use last_run from state for time-filtered endpoints
+        auto_incremental = parameters.get('auto_incremental', False)
+
         logger.info(f"Configuration loaded:")
         logger.info(f"  - Objects: {objects}")
         logger.info(f"  - Output bucket: {output_bucket}")
         logger.info(f"  - Include dependent: {include_dependent}")
         logger.info(f"  - Set primary keys: {set_primary_keys}")
+        logger.info(f"  - Auto incremental: {auto_incremental}")
         if api_url:
             logger.info(f"  - API URL: {api_url}")
+
+        # Get last_run from state for incremental loading
+        from_date = None
+        to_date = None
+        incremental_objects = set()
+        if auto_incremental:
+            state = ci.get_state_file()
+            if state and "last_run" in state:
+                from_date = state["last_run"]
+                # API requires full ISO8601 format with timezone
+                # Ensure proper format
+                if "+" not in from_date and "Z" not in from_date:
+                    # Add timezone if missing (assume UTC)
+                    from_date = from_date + "+00:00"
+                # Set to_date to now for endpoints that require it
+                to_date = datetime.now().isoformat() + "+00:00"
+                logger.info(f"  - Last run: {from_date} (incremental mode)")
+            else:
+                logger.info(f"  - No previous state found, running full load")
 
         # Initialize Fidoo driver
         try:
@@ -691,8 +754,17 @@ def main():
                 endpoint = PRIMARY_ENDPOINTS[object_type]
                 logger.info(f"\n--- {object_type} ---")
 
+                # Determine if this object supports incremental loading
+                obj_from_date = None
+                obj_to_date = None
+                if auto_incremental and object_type in INCREMENTAL_ENDPOINTS:
+                    incremental_objects.add(object_type)  # Mark for incremental manifest
+                    if from_date:
+                        obj_from_date = from_date  # Actually use date filter
+                        obj_to_date = to_date
+
                 try:
-                    count = export_primary_to_duckdb(conn, driver, object_type, endpoint)
+                    count = export_primary_to_duckdb(conn, driver, object_type, endpoint, from_date=obj_from_date, to_date=obj_to_date)
                     object_counts[object_type] = count
                     total_records += count
 
@@ -728,7 +800,7 @@ def main():
             logger.info("PHASE 3: Exporting to CSV")
             logger.info(f"{'='*50}")
 
-            export_counts = export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys)
+            export_counts = export_duckdb_to_csv(conn, ci, output_bucket, set_primary_keys, incremental_objects)
 
         finally:
             conn.close()

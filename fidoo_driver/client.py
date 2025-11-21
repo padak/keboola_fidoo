@@ -428,7 +428,8 @@ class FidooDriver(BaseDriver):
     def read_batched(
         self,
         query: str,
-        batch_size: int = 100
+        batch_size: int = 100,
+        **kwargs
     ) -> Iterator[List[Dict[str, Any]]]:
         """
         Execute query and yield results in batches (memory-efficient).
@@ -439,6 +440,7 @@ class FidooDriver(BaseDriver):
         Args:
             query: Endpoint path (e.g., "user/get-users")
             batch_size: Records per batch (max: 100)
+            **kwargs: Additional parameters to include in request payload
 
         Yields:
             Batches of records as lists
@@ -460,16 +462,16 @@ class FidooDriver(BaseDriver):
         offset_token = None
         endpoint = query if query.startswith("/") else f"/{query}"
 
-        # Add default dates for endpoints that require them
+        # Add default dates for endpoints that require them (only if not provided in kwargs)
         date_payload = {}
-        if "personal-billing/get-billings" in endpoint:
+        if "personal-billing/get-billings" in endpoint and "fromDate" not in kwargs:
             today = datetime.now()
             two_years_ago = today - timedelta(days=730)
             date_payload["fromDate"] = two_years_ago.strftime("%Y-%m-%d")
             date_payload["toDate"] = today.strftime("%Y-%m-%d")
 
         while True:
-            payload = {"limit": batch_size, **date_payload}
+            payload = {"limit": batch_size, **date_payload, **kwargs}
             if offset_token:
                 payload["offsetToken"] = offset_token
 
