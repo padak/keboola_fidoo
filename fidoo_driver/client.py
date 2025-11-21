@@ -907,6 +907,12 @@ class FidooDriver(BaseDriver):
                     []
                 )
 
+            # Fallback for single object responses (e.g., get-user, get-expense)
+            # These endpoints return the object directly without a wrapper
+            if records is None or records == []:
+                if "userId" in data or "expenseId" in data or "cardId" in data:
+                    return [data]
+
             # Ensure we return a list
             if isinstance(records, list):
                 return records
