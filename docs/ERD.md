@@ -102,37 +102,37 @@ erDiagram
     %% Nested/Array tables
     card__connectedUserIds {
         string parent_id FK
-        int _index
+        int idx
         string value
     }
 
     expense__receiptUrls {
         string parent_id FK
-        int _index
+        int idx
         string value
     }
 
     expense__projectIds {
         string parent_id FK
-        int _index
+        int idx
         string value
     }
 
     cash_transaction__receiptUrls {
         string parent_id FK
-        int _index
+        int idx
         string value
     }
 
     travel_report_detail__parts {
         string parent_id FK
-        int _index
+        int idx
         string value
     }
 
     travel_request_detail__parts {
         string parent_id FK
-        int _index
+        int idx
         string value
     }
 
@@ -143,7 +143,7 @@ erDiagram
 
     personal_billing__summaryByCurrencyList {
         string parent_id FK
-        int _index
+        int idx
         string value
     }
 

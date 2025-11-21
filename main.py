@@ -284,7 +284,7 @@ def extract_nested(records, table_name, primary_key=None):
                         nested_tables[nested_name] = []
 
                     for i, item in enumerate(value):
-                        nested_record = {"parent_id": pk_value, "_index": i, **item}
+                        nested_record = {"parent_id": pk_value, "idx": i, **item}
                         nested_tables[nested_name].append(nested_record)
                 else:
                     # Array of primitives → separate table with value column
@@ -293,7 +293,7 @@ def extract_nested(records, table_name, primary_key=None):
                         nested_tables[nested_name] = []
 
                     for i, item in enumerate(value):
-                        nested_record = {"parent_id": pk_value, "_index": i, "value": item}
+                        nested_record = {"parent_id": pk_value, "idx": i, "value": item}
                         nested_tables[nested_name].append(nested_record)
             else:
                 # Regular field or empty list/dict
@@ -514,8 +514,8 @@ def get_primary_key_for_table(conn, table_name):
         pk = []
         if "parent_id" in column_names:
             pk.append("parent_id")
-        if "_index" in column_names:
-            pk.append("_index")
+        if "idx" in column_names:
+            pk.append("idx")
         return pk if pk else None
 
     # Primary tables - look for {table_name}Id pattern
